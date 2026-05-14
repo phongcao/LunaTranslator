@@ -1290,6 +1290,49 @@
             "args": {
                 "key": ""
             }
+        },
+        "vieneutts": {
+            "use": false,
+            "name": "VieNeu TTS",
+            "type": "offline",
+            "args": {
+                "lm_studio_url": "http://127.0.0.1:1234",
+                "lm_studio_model": "vieneu-tts-v2",
+                "model_type": "standard",
+                "voice_repo": "pnnbao-ump/VieNeu-TTS-v2",
+                "codec_repo": "neuphonic/neucodec-onnx-decoder-int8",
+                "use_chat_format": "false"
+            },
+            "argstype": {
+                "lm_studio_url": {
+                    "type": "lineedit",
+                    "name": "LM Studio URL"
+                },
+                "lm_studio_model": {
+                    "type": "lineedit",
+                    "name": "LM Studio Model"
+                },
+                "model_type": {
+                    "type": "combo",
+                    "name": "Model Type",
+                    "list": ["Standard", "Turbo"],
+                    "internal": ["standard", "turbo"]
+                },
+                "voice_repo": {
+                    "type": "lineedit",
+                    "name": "Voice Repo (HuggingFace)"
+                },
+                "codec_repo": {
+                    "type": "lineedit",
+                    "name": "Codec Repo (HuggingFace)"
+                },
+                "use_chat_format": {
+                    "type": "combo",
+                    "name": "Chat Format (standard only)",
+                    "list": ["No", "Yes"],
+                    "internal": ["false", "true"]
+                }
+            }
         }
     },
     "hirasetting": {
