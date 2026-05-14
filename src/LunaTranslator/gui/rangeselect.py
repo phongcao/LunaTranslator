@@ -1,4 +1,6 @@
 from qtsymbols import *
+from collections import OrderedDict
+import html
 import windows, NativeUtils, gobject
 from myutils.config import globalconfig
 from myutils.hwnd import safepixmap
@@ -133,6 +135,55 @@ class Mainw(QMainWindow):
         self.updateGrips()
 
 
+class OCRRegionTextEdit(QTextEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setFrameStyle(0)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Base, Qt.GlobalColor.transparent)
+        self.setPalette(pal)
+        self.document().setDocumentMargin(0)
+        self.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 224);"
+            "border-radius: 4px;"
+            "border: 1px solid rgba(255, 255, 255, 32);"
+            "padding: 6px;"
+        )
+
+
+class OCRRegionTextOverlay(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+            | Qt.WindowType.WindowTransparentForInput,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.text = OCRRegionTextEdit(self)
+        self.text.setGeometry(0, 0, 1, 1)
+        self._applytransparentstate()
+
+    def _applytransparentstate(self):
+        style = windows.GetWindowLong(int(self.winId()), windows.GWL_EXSTYLE)
+        style |= windows.WS_EX_TRANSPARENT
+        windows.SetWindowLong(int(self.winId()), windows.GWL_EXSTYLE, style)
+
+    def showEvent(self, event):
+        self._applytransparentstate()
+        super().showEvent(event)
+
+
 class rangeadjust(Mainw):
     closesignal = pyqtSignal()
     traceoffsetsignal = pyqtSignal(QPoint)
@@ -210,18 +261,30 @@ class rangeadjust(Mainw):
         ).toRect()
 
     def __init__(self, parent, ranges):
+        self._rect = None
+        self.tracepos = QPoint()
+        self._isTracking = False
+        self.label = None
+        self.drag_label = None
+        self.translation_overlay = None
+        self.translation_label = None
         super().__init__(parent)
         self.__isfocus = False
+        self.__rangevisible = True
+        self.__manual_mouse_transparent = False
+        self.__capture_suppressed = False
+        self.__translation_cycle = None
+        self.__translation_entries: "OrderedDict[str, dict]" = OrderedDict()
         self.ranges: list = ranges
         self.traceoffsetsignal.connect(self.traceoffset)
         self.label = QLabel(self)
+        self.translation_overlay = OCRRegionTextOverlay(self)
+        self.translation_label = self.translation_overlay.text
+        self.translation_overlay.hide()
         self.setstyle()
         self.closesignal.connect(self.close)
-        self.tracepos = QPoint()
         self.drag_label = QLabel(self)
         self.drag_label.setGeometry(0, 0, 4000, 2000)
-        self._isTracking = False
-        self._rect = None
         self.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.FramelessWindowHint
@@ -230,8 +293,170 @@ class rangeadjust(Mainw):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.showmenu)
+        self.drag_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         for s in self.cornerGrips:
             s.raise_()
+        gobject.base.show_fany_switch.connect(self.onshowfanyswitch)
+        self.onshowfanyswitch(globalconfig["showfanyi"])
+
+    def onshowfanyswitch(self, _):
+        self.refreshtranslation()
+
+    def _applytransparentstate(self):
+        transparent = (not self.__rangevisible) or self.__manual_mouse_transparent
+        style = windows.GetWindowLong(int(self.winId()), windows.GWL_EXSTYLE)
+        if transparent:
+            style |= windows.WS_EX_TRANSPARENT
+        else:
+            style &= ~windows.WS_EX_TRANSPARENT
+        windows.SetWindowLong(int(self.winId()), windows.GWL_EXSTYLE, style)
+
+    def _updateinteractivemask(self):
+        if not self.__rangevisible:
+            self.clearMask()
+            return
+        outer = self.rect()
+        if outer.isEmpty():
+            return
+        inner = outer.adjusted(
+            self.gripSize,
+            self.gripSize,
+            -self.gripSize,
+            -self.gripSize,
+        )
+        if inner.width() <= 0 or inner.height() <= 0:
+            self.setMask(QRegion(outer))
+            return
+        self.setMask(QRegion(outer).subtracted(QRegion(inner)))
+
+    def setrangevisible(self, visible: bool):
+        self.__rangevisible = visible
+        self.label.setVisible(visible)
+        self.drag_label.setVisible(visible)
+        for grip in self.sideGrips + self.cornerGrips:
+            grip.setVisible(visible)
+        self._updateinteractivemask()
+        self._applytransparentstate()
+        self.refreshtranslation()
+
+    def _buildtranslationhtml(self, fontsize: float):
+        fontfamily = html.escape(globalconfig["fonttype2"])
+        fontweight = "bold" if globalconfig.get("showbold_trans", False) else "normal"
+        textcolor = "#FFFFFF"
+        namecolor = "#D9DDE3"
+        blocks = []
+        for item in self.__translation_entries.values():
+            name = item["name"]
+            text = item["text"]
+            if globalconfig.get("showfanyisource", False) and name:
+                blocks.append(
+                    '<div style="color:{color}; font-weight:{weight}; margin-bottom:2px;">{name}</div>'.format(
+                        color=namecolor,
+                        weight=fontweight,
+                        name=html.escape(name),
+                    )
+                )
+            blocks.append(
+                '<div style="color:{color}; white-space:pre-wrap;">{text}</div>'.format(
+                    color=textcolor,
+                    text=html.escape(text).replace("\n", "<br>"),
+                )
+            )
+        return (
+            '<div style="font-family:\'{fontfamily}\'; font-size:{fontsize}pt; font-weight:{weight};">{body}</div>'.format(
+                fontfamily=fontfamily,
+                fontsize=fontsize,
+                weight=fontweight,
+                body="<div style=\"height:6px;\"></div>".join(blocks),
+            )
+        )
+
+    def _fittranslationfontsize(self, width: int, height: int):
+        if width <= 0 or height <= 0:
+            return globalconfig["fontsize"]
+        low = 4
+        high = max(int(globalconfig["fontsize"]), 4)
+        high = max(high, min(int(height), 72))
+        best = low
+        document = QTextDocument(self.translation_label)
+        while low <= high:
+            mid = (low + high) // 2
+            document.setHtml(self._buildtranslationhtml(mid))
+            document.setTextWidth(max(1, width - 12))
+            if document.size().height() <= height - 12:
+                best = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+        return best
+
+    def _refreshwindowvisible(self):
+        should_show = bool(self._rect) and self.__rangevisible
+        if should_show:
+            self.show()
+        else:
+            self.hide()
+        self._applytransparentstate()
+
+    def refreshtranslation(self):
+        if (self.translation_overlay is None) or (self.translation_label is None):
+            return
+        show_translation = (
+            globalconfig["showfanyi"]
+            and bool(self.__translation_entries)
+            and (not self.__capture_suppressed)
+        )
+        if show_translation:
+            margin = self.gripSize if self.__rangevisible else 0
+            width = max(1, self.width() - 2 * margin)
+            height = max(1, self.height() - 2 * margin)
+            geo = self.geometry()
+            ratio = self.devicePixelRatioF() or 1
+            self.translation_overlay.setGeometry(
+                int(geo.x() / ratio) + margin,
+                int(geo.y() / ratio) + margin,
+                width,
+                height,
+            )
+            self.translation_label.setGeometry(0, 0, width, height)
+            fontsize = self._fittranslationfontsize(width, height)
+            self.translation_label.setHtml(self._buildtranslationhtml(fontsize))
+            self.translation_overlay.show()
+            self.translation_overlay.raise_()
+        else:
+            self.translation_overlay.hide()
+        for grip in self.cornerGrips:
+            grip.raise_()
+        self._refreshwindowvisible()
+
+    def setcapturesuppressed(self, suppressed: bool):
+        if self.__capture_suppressed == suppressed:
+            return
+        self.__capture_suppressed = suppressed
+        self.refreshtranslation()
+
+    def begintranslationcycle(self, cycle_id: str):
+        self.__translation_cycle = cycle_id
+
+    def updatetranslation(
+        self, cycle_id: str, engine: str, name: str, text: str, color: str
+    ):
+        if cycle_id != self.__translation_cycle:
+            return
+        if text:
+            self.__translation_entries[engine] = dict(
+                name=name,
+                text=text,
+                color=color,
+            )
+        else:
+            self.__translation_entries.pop(engine, None)
+        self.refreshtranslation()
+
+    def cleartranslation(self):
+        self.__translation_cycle = None
+        self.__translation_entries.clear()
+        self.refreshtranslation()
 
     def showmenu(self, _):
         menu = QMenu(self)
@@ -241,10 +466,12 @@ class rangeadjust(Mainw):
         menu.addAction(close)
         action = menu.exec(QCursor.pos())
         if action == mousetransp:
-            windows.MouseTrans.set(self.winId())
+            self.__manual_mouse_transparent = not self.__manual_mouse_transparent
+            self._applytransparentstate()
         elif action == close:
             self._rect = None
             self.isfocus = False
+            self.cleartranslation()
             self.close()
 
     def setstyle(self):
@@ -258,6 +485,8 @@ class rangeadjust(Mainw):
         )
 
     def mouseMoveEvent(self, e: QMouseEvent):
+        if not self.__rangevisible:
+            return
         if self._isTracking:
             self._endPos = e.pos() - self._startPos
             _geo = self.geometry()
@@ -265,11 +494,15 @@ class rangeadjust(Mainw):
             self.setGeometry(*_geo.getRect())
 
     def mousePressEvent(self, e: QMouseEvent):
+        if not self.__rangevisible:
+            return
         if e.button() == Qt.MouseButton.LeftButton:
             self._isTracking = True
             self._startPos = QPoint(e.pos().x(), e.pos().y())
 
     def mouseReleaseEvent(self, e: QMouseEvent):
+        if not self.__rangevisible:
+            return
         if e.button() == Qt.MouseButton.LeftButton:
             self._isTracking = False
             self._startPos = None
@@ -291,19 +524,33 @@ class rangeadjust(Mainw):
     def moveEvent(self, _):
         if self._rect:
             self._rect = self.rectoffset(self.geometry())
+        self.refreshtranslation()
 
     def enterEvent(self, _):
+        if not self.__rangevisible:
+            return
         self.drag_label.setStyleSheet("background-color:rgba(0,0,0, 0.1)")
 
     def leaveEvent(self, _):
+        if not self.__rangevisible:
+            return
         self.drag_label.setStyleSheet("background-color:none")
 
     def resizeEvent(self, a0):
+        if self.label is None:
+            return super().resizeEvent(a0)
 
         self.label.setGeometry(0, 0, self.width(), self.height())
+        self._updateinteractivemask()
         if self._rect:
             self._rect = self.rectoffset(self.geometry())
+        self.refreshtranslation()
         super().resizeEvent(a0)
+
+    def closeEvent(self, event):
+        if self.translation_overlay is not None:
+            self.translation_overlay.close()
+        super().closeEvent(event)
 
     def getrect(self):
         return self._rect
@@ -312,7 +559,6 @@ class rangeadjust(Mainw):
         self.tracepos = QPoint()
         if rect:
             (x1, y1), (x2, y2) = rect
-            self.show()
             r = self.devicePixelRatioF()
             self.setGeometry(
                 x1 - int(globalconfig.get("ocrrangewidth", 2) * r),
@@ -321,6 +567,7 @@ class rangeadjust(Mainw):
                 y2 - y1 + int(2 * globalconfig.get("ocrrangewidth", 2) * r),
             )
         self._rect = rect
+        self.refreshtranslation()
         # 由于使用movewindow而非qt函数，导致内部执行绪有问题。
 
 

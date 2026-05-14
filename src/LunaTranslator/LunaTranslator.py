@@ -43,7 +43,7 @@ from gui.showword import searchwordW
 from myutils.hwnd import getExeIcon, getcurrexe
 from textio.textsource.copyboard import copyboard
 from textio.textsource.texthook import texthook
-from textio.textsource.ocrtext import ocrtext
+from textio.textsource.ocrtext import ocrtext, OCRMultiRegionDispatch
 from textio.textsource.textsourcebase import basetext
 from textio.textsource.filetrans import filetrans
 from textio.textsource.mssr import mssr
@@ -56,6 +56,7 @@ from gui.flowsearchword import WordViewTooltip
 import importlib, qtawesome
 from functools import partial
 from gui.attachprocessdialog import AttachProcessDialog
+from gui.bindwindowdialog import BindWindowDialog
 import windows
 import NativeUtils
 from gui.gamemanager.common import startgame
@@ -281,6 +282,7 @@ class BASEOBJECT(QObject):
         self.currenttranslate = ""
         self.currenttranslate_1 = ""
         self.latest_is_origin = True
+        self.ocr_region_text_state: "dict[str, str]" = {}
         self.refresh_on_get_trans_signature = 0
         self.currentsignature = None
         self.isrunning = True
@@ -289,6 +291,7 @@ class BASEOBJECT(QObject):
         self.outputers: "dict[str, outputerbase]" = {}
         self.processmethods = []
         self.AttachProcessDialog = None
+        self.BindWindowDialog = None
         self.edittextui = None
         self.edittextui_cached = None
         self.notifyonce = set()
@@ -552,18 +555,32 @@ class BASEOBJECT(QObject):
         isRefresh=False,
     ):
         with self.solvegottextlock:
-            succ = self.textgetmethod_1(
-                text,
-                is_auto_run=is_auto_run,
-                waitforresultcallback=waitforresultcallback,
-                waitforresultcallbackengine=waitforresultcallbackengine,
-                waitforresultcallbackengine_force=waitforresultcallbackengine_force,
-                erroroutput=erroroutput,
-                updateTranslate=updateTranslate,
-                isFromHook=isFromHook,
-                statusok=statusok,
-                isRefresh=isRefresh,
-            )
+            if isinstance(text, OCRMultiRegionDispatch):
+                succ = self.textgetmethod_ocr_1(
+                    text,
+                    is_auto_run=is_auto_run,
+                    waitforresultcallback=waitforresultcallback,
+                    waitforresultcallbackengine=waitforresultcallbackengine,
+                    waitforresultcallbackengine_force=waitforresultcallbackengine_force,
+                    erroroutput=erroroutput,
+                    updateTranslate=updateTranslate,
+                    isFromHook=isFromHook,
+                    statusok=statusok,
+                    isRefresh=isRefresh,
+                )
+            else:
+                succ = self.textgetmethod_1(
+                    text,
+                    is_auto_run=is_auto_run,
+                    waitforresultcallback=waitforresultcallback,
+                    waitforresultcallbackengine=waitforresultcallbackengine,
+                    waitforresultcallbackengine_force=waitforresultcallbackengine_force,
+                    erroroutput=erroroutput,
+                    updateTranslate=updateTranslate,
+                    isFromHook=isFromHook,
+                    statusok=statusok,
+                    isRefresh=isRefresh,
+                )
             if waitforresultcallback and not succ:
                 waitforresultcallback(TranslateResult())
 
@@ -575,6 +592,481 @@ class BASEOBJECT(QObject):
             e = _TR(dynamicapiname(klass)) + " " + e
         self._delayshowraw(_showrawfunction)
         self.translation_ui.displaystatusklass.emit(e, t, klass)
+
+    def _prepare_translation_plan(self, text_solved, optimization_params, is_auto_run):
+        maybehaspremt = {}
+        skip_other_on_success = False
+        fix_rank = globalconfig["fix_translate_rank_rank"].copy()
+        if ("rengong" in self.translators) and (
+            not (is_auto_run and globalconfig["fanyi"]["rengong"].get("manual", False))
+        ):
+            contentraw = self.analyzecontent(text_solved, optimization_params)
+            try:
+                res = self.translators["rengong"].translate(contentraw)
+                res = self.solveaftertrans(res, optimization_params)
+            except:
+                print_exc()
+                res = None
+            maybehaspremt["rengong"] = res
+            skip_other_on_success = (
+                res and self.translators["rengong"].config["skip_other_on_success"]
+            )
+
+        if (
+            (not skip_other_on_success)
+            and ("premt" in self.translators)
+            and (
+                not (
+                    is_auto_run and globalconfig["fanyi"]["premt"].get("manual", False)
+                )
+            )
+        ):
+            contentraw = self.analyzecontent(text_solved, optimization_params)
+            try:
+                maybehaspremt = self.translators["premt"].translate(contentraw)
+                for k in maybehaspremt:
+                    maybehaspremt[k] = self.solveaftertrans(
+                        maybehaspremt[k], optimization_params
+                    )
+            except:
+                print_exc()
+            other = list(set(maybehaspremt.keys()) - set(fix_rank))
+            idx = fix_rank.index("premt")
+            fix_rank = fix_rank[:idx] + other + fix_rank[idx + 1 :]
+
+        real_fix_rank = []
+        if skip_other_on_success:
+            real_fix_rank.append("rengong")
+        else:
+            for engine in fix_rank:
+                if (engine not in self.translators) and (engine not in maybehaspremt):
+                    continue
+                real_fix_rank.append(engine)
+        return maybehaspremt, real_fix_rank
+
+    def _ocr_region_invoke(self, callback, *argc):
+        gobject.base.safeinvokefunction.emit(functools.partial(callback, *argc))
+
+    def _ocr_clear_region_text_state(self, region_ids=None):
+        if region_ids is None:
+            self.ocr_region_text_state.clear()
+            return
+        for region_id in region_ids:
+            self.ocr_region_text_state.pop(region_id, None)
+
+    def _ocr_build_translation_text(self, payload, prepared_regions):
+        if len(prepared_regions) <= 1:
+            text = prepared_regions[0][1] if prepared_regions else ""
+            return text, []
+        tokens = []
+        chunks = []
+        for idx, (_, text) in enumerate(prepared_regions):
+            token = "[@@LUNA_OCR_REGION_{}_{}@@]".format(payload.signature[:8], idx)
+            tokens.append(token)
+            chunks.append(token)
+            chunks.append(text)
+        return "\n".join(chunks), tokens
+
+    def _ocr_split_regions_result(self, result, tokens, count: int):
+        if count == 0:
+            return []
+        if count == 1:
+            return [result.strip()]
+        positions = []
+        offset = 0
+        for token in tokens:
+            pos = result.find(token, offset)
+            if pos < 0:
+                return
+            positions.append(pos)
+            offset = pos + len(token)
+        res = []
+        for idx, pos in enumerate(positions):
+            start = pos + len(tokens[idx])
+            end = positions[idx + 1] if idx + 1 < len(positions) else len(result)
+            res.append(result[start:end].strip())
+        return res
+
+    def _ocr_push_region_translation(
+        self, textsource, cycle_id, region_id, classname, text: str
+    ):
+        self._ocr_region_invoke(
+            textsource.update_region_translation,
+            region_id,
+            cycle_id,
+            classname,
+            _TR(dynamicapiname(classname)) if classname else "",
+            text,
+            TranslateColor(classname).get() if classname else SpecialColor.RawTextColor.get(),
+        )
+
+    def _ocr_finalize_engine_result(self, context: dict, classname: str, results: list):
+        combined = "\n".join(results)
+        if not combined:
+            return
+        if context["statusok"]:
+            self.history.appendtrans(context["currentsignature"], classname, combined)
+            self.transhis.getnewtranssignal.emit(_TR(dynamicapiname(classname)), combined)
+            try:
+                context["textsource"].sqlqueueput((context["plain_text"], classname, combined))
+            except:
+                pass
+        gobject.base.dispatch_translate.emit(classname, combined)
+        if len(self.currenttranslate):
+            self.currenttranslate += "\n"
+        self.currenttranslate += combined
+        self.currenttranslate_1 = combined
+        self.latest_is_origin = False
+        if (
+            globalconfig["read_trans"]
+            and (not context["read_trans_once_check"])
+            and (
+                (globalconfig["toppest_translator"] == classname)
+                or ((not globalconfig["toppest_translator"]))
+            )
+        ):
+            self.readcurrent()
+            context["read_trans_once_check"].append(classname)
+        self.dispatchoutputer(combined, False)
+
+    def _ocr_start_region_fallback(self, context: dict, classname: str):
+        if classname in context["fallback_started"]:
+            return
+        context["fallback_started"].add(classname)
+        fallback = dict(
+            parent=context,
+            classname=classname,
+            pending=set(),
+            results={},
+        )
+        for region, text in context["regions"]:
+            try:
+                region_text_solved, optimization_params = self.solvebeforetrans(text)
+            except Exception as e:
+                self.__erroroutput(
+                    classname,
+                    context["erroroutput"],
+                    None,
+                    stringfyerror(e),
+                    TextType.Error_origin,
+                )
+                fallback["results"][region.region_id] = ""
+                continue
+            if not region_text_solved:
+                fallback["results"][region.region_id] = ""
+                continue
+            fallback["pending"].add(region.region_id)
+            callback = partial(
+                self.GetOCRSingleRegionTranslationCallback,
+                fallback,
+                region,
+                optimization_params,
+            )
+            self.queue_translate_task(
+                classname,
+                callback,
+                region_text_solved,
+                context["waitforresultcallback"],
+                context["is_auto_run"],
+                optimization_params,
+            )
+        if not fallback["pending"]:
+            ordered = [
+                fallback["results"].get(region.region_id, "")
+                for region, _ in context["regions"]
+            ]
+            self._ocr_finalize_engine_result(context, classname, ordered)
+
+    def GetOCRSingleRegionTranslationCallback(
+        self,
+        fallback: dict,
+        region,
+        optimization_params,
+        res: str,
+        iter_res_status,
+        iserror=False,
+    ):
+        with self.gettranslatelock:
+            context = fallback["parent"]
+            if context["currentsignature"] != self.currentsignature:
+                return
+            if iserror:
+                self._ocr_clear_region_text_state([region.region_id])
+                if context["erroroutput"] or (
+                    context["currentsignature"] == self.currentsignature
+                ):
+                    self.__erroroutput(
+                        fallback["classname"],
+                        context["erroroutput"],
+                        None,
+                        res,
+                        TextType.Error_translator,
+                    )
+                fallback["results"][region.region_id] = ""
+            else:
+                if iter_res_status not in (0, 2):
+                    return
+                res = self.solveaftertrans(res, optimization_params)
+                fallback["results"][region.region_id] = res or ""
+                if res:
+                    self._ocr_push_region_translation(
+                        context["textsource"],
+                        context["cycle_id"],
+                        region.region_id,
+                        fallback["classname"],
+                        res,
+                    )
+            fallback["pending"].discard(region.region_id)
+            if fallback["pending"]:
+                return
+            ordered = [
+                fallback["results"].get(regioninfo.region_id, "")
+                for regioninfo, _ in context["regions"]
+            ]
+            self._ocr_finalize_engine_result(context, fallback["classname"], ordered)
+
+    def GetOCRMultiRegionTranslationCallback(
+        self,
+        context: dict,
+        classname: str,
+        optimization_params,
+        res: str,
+        iter_res_status,
+        iserror=False,
+    ):
+        with self.gettranslatelock:
+            if classname in context["usefultranslators"]:
+                context["usefultranslators"].remove(classname)
+            if context["currentsignature"] != self.currentsignature:
+                return
+            if iserror:
+                self._ocr_clear_region_text_state(
+                    [region.region_id for region, _ in context["regions"]]
+                )
+                if context["erroroutput"] or (
+                    context["currentsignature"] == self.currentsignature
+                ):
+                    self.__erroroutput(
+                        classname,
+                        context["erroroutput"],
+                        None,
+                        res,
+                        TextType.Error_translator,
+                    )
+                return
+            if iter_res_status not in (0, 2):
+                return
+            res = self.solveaftertrans(res, optimization_params)
+            if not res:
+                return
+            splits = self._ocr_split_regions_result(
+                res, context["tokens"], len(context["regions"])
+            )
+            if splits is None:
+                self._ocr_start_region_fallback(context, classname)
+                return
+            for (region, _), text in zip(context["regions"], splits):
+                self._ocr_push_region_translation(
+                    context["textsource"],
+                    context["cycle_id"],
+                    region.region_id,
+                    classname,
+                    text,
+                )
+            self._ocr_finalize_engine_result(context, classname, splits)
+
+    def textgetmethod_ocr_1(
+        self,
+        payload: OCRMultiRegionDispatch,
+        is_auto_run=True,
+        waitforresultcallback=None,
+        waitforresultcallbackengine=None,
+        waitforresultcallbackengine_force=False,
+        erroroutput=None,
+        updateTranslate=False,
+        isFromHook=False,
+        statusok=True,
+        isRefresh=False,
+    ):
+        if waitforresultcallback:
+            return
+        if not payload or not payload.regions:
+            return
+        origin_text = payload.text
+        if (
+            (not payload.isocrtranslate)
+            and is_auto_run
+            and origin_text == self.currenttext_raw
+            and statusok == self.statusok
+        ):
+            return True
+        textsource = self.textsource
+        if not isinstance(textsource, ocrtext):
+            return
+        currentsignature = uuid.uuid4() if not isRefresh else self.currentsignature
+        cycle_id = currentsignature.hex
+        if payload.isocrtranslate:
+            self.currentsignature = currentsignature
+            region_ids = [region.region_id for region in payload.regions if region.text]
+            self._ocr_region_invoke(
+                textsource.begin_region_translation_cycle,
+                cycle_id,
+                region_ids,
+            )
+            for region in payload.regions:
+                if region.text:
+                    self.ocr_region_text_state[region.region_id] = region.text
+                    self._ocr_push_region_translation(
+                        textsource,
+                        cycle_id,
+                        region.region_id,
+                        "",
+                        region.text,
+                    )
+            return True
+
+        prepared_regions = []
+        blank_region_ids = []
+        try:
+            for region in payload.regions:
+                if not region.text:
+                    blank_region_ids.append(region.region_id)
+                    continue
+                if not region.text.strip():
+                    blank_region_ids.append(region.region_id)
+                    continue
+                solved = POSTSOLVE(
+                    region.text, isEx=waitforresultcallback, isFromHook=isFromHook
+                )
+                if not solved or not solved.strip():
+                    blank_region_ids.append(region.region_id)
+                    continue
+                prepared_regions.append((region, solved))
+        except Exception as e:
+            self.__erroroutput(
+                None,
+                erroroutput,
+                None,
+                stringfyerror(e),
+                TextType.Error_origin,
+            )
+            return
+        if blank_region_ids:
+            self._ocr_clear_region_text_state(blank_region_ids)
+            self._ocr_region_invoke(
+                textsource.clear_region_translation,
+                blank_region_ids,
+            )
+        if not prepared_regions:
+            return True
+        region_ids = [region.region_id for region, _ in prepared_regions]
+        plain_text = "\n".join(text for _, text in prepared_regions)
+        gobject.base.showandsolvesig.emit(origin_text, plain_text)
+        if (
+            is_auto_run
+            and plain_text == self.currenttext
+            and statusok == self.statusok
+        ):
+            return True
+        self.currentsignature = currentsignature
+        self._ocr_region_invoke(
+            textsource.begin_region_translation_cycle,
+            cycle_id,
+            region_ids,
+        )
+        for region, solved in prepared_regions:
+            self.ocr_region_text_state[region.region_id] = solved
+        if not isRefresh:
+            self.currenttext = plain_text
+            self.currenttext_raw = origin_text
+            self.statusok = statusok
+            self.currenttranslate = ""
+            self.currenttranslate_1 = ""
+            self.latest_is_origin = True
+            if globalconfig["read_raw"]:
+                self.readcurrent()
+            self.dispatchoutputer(plain_text, True)
+        self.history.appendtext(currentsignature, plain_text)
+        if statusok and not isRefresh:
+            self.transhis.getnewsentencesignal.emit(plain_text)
+            try:
+                textsource.sqlqueueput((plain_text, origin_text))
+            except:
+                pass
+        self.maybesetedittext(plain_text)
+        if is_auto_run and (
+            len(plain_text) < globalconfig["minlength"]
+            or len(plain_text) > globalconfig["maxlength"]
+        ):
+            return True
+        if not globalconfig["showfanyi"]:
+            return True
+
+        if len(prepared_regions) > 1:
+            text_solved, optimization_params = self.solvebeforetrans(plain_text)
+        else:
+            translate_text, tokens = self._ocr_build_translation_text(
+                payload, prepared_regions
+            )
+            text_solved, optimization_params = self.solvebeforetrans(translate_text)
+        if not text_solved:
+            return True
+        maybehaspremt, real_fix_rank = self._prepare_translation_plan(
+            text_solved, optimization_params, is_auto_run
+        )
+        if len(real_fix_rank) == 0:
+            return True
+        if waitforresultcallbackengine:
+            if waitforresultcallbackengine in real_fix_rank:
+                real_fix_rank = [waitforresultcallbackengine]
+            elif waitforresultcallbackengine_force:
+                return
+        ocr_context = dict(
+            payload=payload,
+            textsource=textsource,
+            regions=prepared_regions,
+            plain_text=plain_text,
+            origin_text=origin_text,
+            tokens=tokens if len(prepared_regions) == 1 else [],
+            usefultranslators=real_fix_rank.copy(),
+            currentsignature=currentsignature,
+            cycle_id=cycle_id,
+            read_trans_once_check=[],
+            statusok=statusok,
+            is_auto_run=is_auto_run,
+            waitforresultcallback=waitforresultcallback,
+            erroroutput=erroroutput,
+            fallback_started=set(),
+        )
+        if len(prepared_regions) > 1:
+            for engine in real_fix_rank:
+                if engine in globalconfig["fanyi"]:
+                    _colork = engine
+                else:
+                    _colork = "premt"
+                self._ocr_start_region_fallback(ocr_context, _colork)
+            return True
+        for engine in real_fix_rank:
+            if engine in globalconfig["fanyi"]:
+                _colork = engine
+            else:
+                _colork = "premt"
+            callback = partial(
+                self.GetOCRMultiRegionTranslationCallback,
+                ocr_context,
+                _colork,
+                optimization_params,
+            )
+            self.queue_translate_task(
+                _colork,
+                callback,
+                text_solved,
+                waitforresultcallback,
+                is_auto_run,
+                optimization_params,
+                result=maybehaspremt.get(engine),
+            )
+        return True
 
     def textgetmethod_1(
         self,
@@ -666,54 +1158,9 @@ class BASEOBJECT(QObject):
         if not text_solved:
             return _showrawfunction()
 
-        maybehaspremt = {}
-        skip_other_on_success = False
-        fix_rank = globalconfig["fix_translate_rank_rank"].copy()
-        if ("rengong" in self.translators) and (
-            not (is_auto_run and globalconfig["fanyi"]["rengong"].get("manual", False))
-        ):
-            contentraw = self.analyzecontent(text_solved, optimization_params)
-            try:
-                res = self.translators["rengong"].translate(contentraw)
-                res = self.solveaftertrans(res, optimization_params)
-            except:
-                print_exc()
-                res = None
-            maybehaspremt["rengong"] = res
-            skip_other_on_success = (
-                res and self.translators["rengong"].config["skip_other_on_success"]
-            )
-
-        if (
-            (not skip_other_on_success)
-            and ("premt" in self.translators)
-            and (
-                not (
-                    is_auto_run and globalconfig["fanyi"]["premt"].get("manual", False)
-                )
-            )
-        ):
-            contentraw = self.analyzecontent(text_solved, optimization_params)
-            try:
-                maybehaspremt = self.translators["premt"].translate(contentraw)
-                for k in maybehaspremt:
-                    maybehaspremt[k] = self.solveaftertrans(
-                        maybehaspremt[k], optimization_params
-                    )
-            except:
-                print_exc()
-            other = list(set(maybehaspremt.keys()) - set(fix_rank))
-            idx = fix_rank.index("premt")
-            fix_rank = fix_rank[:idx] + other + fix_rank[idx + 1 :]
-
-        real_fix_rank = []
-        if skip_other_on_success:
-            real_fix_rank.append("rengong")
-        else:
-            for engine in fix_rank:
-                if (engine not in self.translators) and (engine not in maybehaspremt):
-                    continue
-                real_fix_rank.append(engine)
+        maybehaspremt, real_fix_rank = self._prepare_translation_plan(
+            text_solved, optimization_params, is_auto_run
+        )
 
         if len(real_fix_rank) == 0:
             return _showrawfunction()
@@ -809,6 +1256,26 @@ class BASEOBJECT(QObject):
             statusok=statusok,
             is_auto_run=is_auto_run,
         )
+        self.queue_translate_task(
+            engine,
+            callback,
+            text_solved,
+            waitforresultcallback,
+            is_auto_run,
+            optimization_params,
+            result=result,
+        )
+
+    def queue_translate_task(
+        self,
+        engine,
+        callback,
+        text_solved,
+        waitforresultcallback,
+        is_auto_run,
+        optimization_params,
+        result=None,
+    ):
         task = (
             callback,
             text_solved,
@@ -817,12 +1284,10 @@ class BASEOBJECT(QObject):
             optimization_params,
         )
         if result:
-            # 预翻译
             callback(result, 1)
             callback(result, 2)
-        else:
-
-            self.translators[engine].gettask(task)
+            return
+        self.translators[engine].gettask(task)
 
     def __safecallback(self, waitforresultcallback, klass, result=None):
         if not waitforresultcallback:
@@ -1288,6 +1753,22 @@ class BASEOBJECT(QObject):
             )
             if self.AttachProcessDialog:
                 self.AttachProcessDialog.show()
+        except:
+            print_exc()
+
+    def selectbindwindow(self, selectedp, _=None):
+        hwnd = selectedp[2] if selectedp else 0
+        if hwnd:
+            pid = windows.GetWindowThreadProcessId(hwnd)
+            self.translation_ui.bindcropwindowcallback(pid, hwnd)
+
+    def createbindwindow(self):
+        try:
+            self.BindWindowDialog = BindWindowDialog(
+                self.commonstylebase, self.selectbindwindow
+            )
+            if self.BindWindowDialog:
+                self.BindWindowDialog.show()
         except:
             print_exc()
 

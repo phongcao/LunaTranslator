@@ -159,6 +159,9 @@ Some buttons have two icons to indicate two different states. Some buttons only 
 1. #### <i class="fab fa-windows"></i> <i class="btnstatus2 fab fa-windows"></i> Bind to Window (Click to Cancel) {#anchor-bindwindow}
     **This button is very important, many features depend on this button to be set first before they can be used**
 
+    Left-click still lets you click a game window directly.
+    Right-click opens a process list similar to the HOOK game picker, so you can bind by selecting the game's process instead of clicking the window.
+
     After binding the game window, `Window Scaling` `Window Screenshot` `Game Mute`, `Follow Game Window` -> `Unpin when Game Loses Focus` and `Synchronize with Game Window Movement`, as well as recording game time, etc., are available.
     This button is available regardless of HOOK/OCR/Clipboard mode.
 

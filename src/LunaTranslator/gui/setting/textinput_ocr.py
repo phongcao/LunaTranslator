@@ -38,6 +38,15 @@ from gui.setting.about import offlinelinks
 from ocrengines.baseocrclass import OCRResultParsed
 
 
+def __ocr_render_mode_changed(_):
+    try:
+        textsource = getattr(gobject.base, "textsource", None)
+        if textsource and hasattr(textsource, "clear_region_translation"):
+            textsource.clear_region_translation()
+    except:
+        print_exc()
+
+
 def __label1(self):
     threshold1label = QLabel()
     gobject.base.connectsignal(gobject.base.thresholdsett1, threshold1label.setText)
@@ -571,6 +580,14 @@ def internal(self):
         [
             "选取OCR范围后显示范围框",
             D_getsimpleswitch(globalconfig, "showrangeafterrangeselect", default=True),
+            "",
+            "Render Translation In OCR Region",
+            D_getsimpleswitch(
+                globalconfig,
+                "ocr_region_render",
+                callback=__ocr_render_mode_changed,
+                default=True,
+            ),
         ],
     ]
     allothers = [

@@ -1,4 +1,4 @@
-import time, copy
+import time, copy, uuid, threading
 from myutils.config import globalconfig
 from myutils.utils import checkmd5reloadmodule
 import NativeUtils, windows
@@ -14,13 +14,75 @@ from CVUtils import cvMat
 from traceback import print_exc
 
 
-def imageCutEx(*a):
+class OCRRegionDispatch:
+    def __init__(self, region_id: str, rect, result: OCRResultParsed, order: int):
+        self.region_id = region_id
+        self.rect = rect
+        self.result = result
+        self.order = order
+        self.text = result.textonly if result else ""
+        self.isocrtranslate = bool(result and result.result.isocrtranslate)
+        self.vertical = bool(result and result.result.vertical)
+
+
+class OCRMultiRegionDispatch:
+    def __init__(self, regions: "list[OCRRegionDispatch]", auto: bool):
+        self.regions = regions
+        self.auto = auto
+        self.signature = uuid.uuid4().hex
+        self.isocrtranslate = bool(regions and regions[0].isocrtranslate)
+
+    def __bool__(self):
+        return bool(self.regions)
+
+    @property
+    def text(self):
+        return "\n".join(region.text for region in self.regions if region.text)
+
+
+def _capture_image(*a):
     img = imageCut(*a)
     succ = True
     if a[0]:
         succ, img = img
     else:
         succ = False
+    return succ, img
+
+
+def _ocr_capture_overlay_suppressed(suppressed: bool):
+    textsource = getattr(gobject.base, "textsource", None)
+    if not textsource or not hasattr(textsource, "ranges"):
+        return
+    for region in textsource.ranges:
+        try:
+            region.range_ui.setcapturesuppressed(suppressed)
+        except:
+            print_exc()
+
+
+def _ocr_ui_invoke_sync(callback, *argc):
+    done = threading.Event()
+
+    def __():
+        try:
+            callback(*argc)
+        finally:
+            done.set()
+
+    gobject.base.safeinvokefunction.emit(__)
+    done.wait(1)
+
+
+def imageCutEx(*a, suppress_overlay_on_fallback=True):
+    region_render = globalconfig.get("ocr_region_render", True)
+    succ, img = _capture_image(*a)
+    if region_render and suppress_overlay_on_fallback and (not succ):
+        _ocr_ui_invoke_sync(_ocr_capture_overlay_suppressed, True)
+        try:
+            succ, img = _capture_image(*a)
+        finally:
+            _ocr_ui_invoke_sync(_ocr_capture_overlay_suppressed, False)
     if img.isNull():
         return img
     if not succ:
@@ -48,6 +110,7 @@ def imageCutEx(*a):
 class rangemanger:
     def __init__(self, ref: "ocrtext", ranges: "list[rangemanger]"):
         self.ref = ref
+        self.region_id = uuid.uuid4().hex
         self.range_ui = rangeadjust(gobject.base.settin_ui, ranges)
         self.savelastimg: cvMat = None
         self.savelastrecimg: cvMat = None
@@ -56,6 +119,9 @@ class rangemanger:
 
     def __del__(self):
         self.range_ui.closesignal.emit()
+
+    def builddispatch(self, result: OCRResultParsed, order: int):
+        return OCRRegionDispatch(self.region_id, self.range_ui.getrect(), result, order)
 
     def getresmanual(self):
         rect = self.range_ui.getrect()
@@ -75,9 +141,16 @@ class rangemanger:
         rect = self.range_ui.getrect()
         if rect is None:
             return
-        imgr = imageCutEx(self.ref.hwnd, rect[0][0], rect[0][1], rect[1][0], rect[1][1])
         ok = True
         if globalconfig["ocr_auto_method_v2"] == "analysis":
+            imgr = imageCutEx(
+                self.ref.hwnd,
+                rect[0][0],
+                rect[0][1],
+                rect[1][0],
+                rect[1][1],
+                suppress_overlay_on_fallback=False,
+            )
             imgr1 = cvMat.fromQImage(imgr)
 
             image_score = imgr1.MSSIM(self.savelastimg)
@@ -103,6 +176,14 @@ class rangemanger:
                 ok = False
         if ok == False:
             return
+        if globalconfig["ocr_auto_method_v2"] != "analysis":
+            imgr = imageCutEx(
+                self.ref.hwnd, rect[0][0], rect[0][1], rect[1][0], rect[1][1]
+            )
+        else:
+            imgr = imageCutEx(
+                self.ref.hwnd, rect[0][0], rect[0][1], rect[1][0], rect[1][1]
+            )
         result = ocr_run(imgr)
         t = result.textonly
         self.lastocrtime = time.time()
@@ -117,7 +198,14 @@ class rangemanger:
         rect = self.range_ui.getrect()
         if rect is None:
             return False
-        imgr = imageCutEx(self.ref.hwnd, rect[0][0], rect[0][1], rect[1][0], rect[1][1])
+        imgr = imageCutEx(
+            self.ref.hwnd,
+            rect[0][0],
+            rect[0][1],
+            rect[1][0],
+            rect[1][1],
+            suppress_overlay_on_fallback=False,
+        )
         imgr1 = cvMat.fromQImage(imgr)
         image_score = imgr1.MSSIM(self.savelastimg)
 
@@ -138,10 +226,15 @@ class ocrtext(basetext):
         self.gettextthread()
 
     def clearrange(self):
+        self.clear_region_translation()
+        for region in self.ranges:
+            region.range_ui.closesignal.emit()
         self.ranges.clear()
         globalconfig["ocrregions"].clear()
 
     def leaveone(self):
+        for region in self.ranges[:-1]:
+            region.range_ui.closesignal.emit()
         self.ranges = self.ranges[-1:]
         if self.ranges:
             self.ranges[0].range_ui.isfocus = False
@@ -178,8 +271,46 @@ class ocrtext(basetext):
                 _r = _.range_ui.getrect()
                 if _r:
                     _.range_ui.setrect(_r)
+                _.range_ui.setrangevisible(True)
             else:
-                _.range_ui.hide()
+                _.range_ui.setrangevisible(False)
+
+    def isregionrender(self):
+        return globalconfig.get("ocr_region_render", True) and any(
+            bool(r.range_ui.getrect()) for r in self.ranges
+        )
+
+    def _getrangemanger(self, region_id: str):
+        for region in self.ranges:
+            if region.region_id == region_id:
+                return region
+
+    def begin_region_translation_cycle(self, cycle_id: str, region_ids: "list[str]"):
+        for region_id in region_ids:
+            region = self._getrangemanger(region_id)
+            if region:
+                region.range_ui.begintranslationcycle(cycle_id)
+
+    def update_region_translation(
+        self,
+        region_id: str,
+        cycle_id: str,
+        engine: str,
+        name: str,
+        text: str,
+        color: str,
+    ):
+        region = self._getrangemanger(region_id)
+        if region:
+            region.range_ui.updatetranslation(cycle_id, engine, name, text, color)
+
+    def clear_region_translation(self, region_ids: "list[str]" = None):
+        if region_ids is None:
+            region_ids = [region.region_id for region in self.ranges]
+        for region_id in region_ids:
+            region = self._getrangemanger(region_id)
+            if region:
+                region.range_ui.cleartranslation()
 
     @threader
     def gettextthread(self):
@@ -272,6 +403,7 @@ class ocrtext(basetext):
 
     def getallres(self, auto):
         __text: "list[OCRResultParsed]" = []
+        __regions: "list[OCRRegionDispatch]" = []
         for r in self.getuseranges():
 
             if auto:
@@ -284,8 +416,11 @@ class ocrtext(basetext):
                 _.displayerror()
                 return
             __text.append(_)
+            __regions.append(r.builddispatch(_, len(__regions)))
         if not __text:
             return
+        if self.isregionrender():
+            return OCRMultiRegionDispatch(__regions, auto)
         text = "\n".join(_.textonly for _ in __text)
         if __text[0].result.isocrtranslate:
             gobject.base.displayinfomessage(text, "<notrans>")
@@ -302,5 +437,6 @@ class ocrtext(basetext):
         self._pause_state = False
 
     def end(self):
+        self.clear_region_translation()
         globalconfig["ocrregions"] = [_.range_ui.getrect() for _ in self.ranges]
         self.ranges.clear()

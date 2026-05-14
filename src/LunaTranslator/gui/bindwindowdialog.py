@@ -4,56 +4,41 @@ import windows, qtawesome, gobject
 from NativeUtils import GetProcessFirstWindow
 from myutils.config import globalconfig, _TR
 from myutils.wrapper import Singleton
-from myutils.hwnd import (
-    ListProcess,
-    mouseselectwindow,
-    getExeIcon,
-    test_injectable,
-)
+from myutils.hwnd import ListProcess, mouseselectwindow, getExeIcon
 from gui.usefulwidget import saveposwindow
-from gui.dynalang import LPushButton, LLabel, LCheckBox
+from gui.dynalang import LPushButton, LLabel
 
 
-class _BaseProcessDialog(saveposwindow):
+@Singleton
+class BindWindowDialog(saveposwindow):
 
     setcurrentpidpnamesignal = pyqtSignal(int, int)
 
     def selectwindowcallback(self, pid, hwnd):
-        if pid == os.getpid():
+        if pid == os.getpid() or not hwnd:
             return mouseselectwindow(self.setcurrentpidpnamesignal.emit)
         self.setEnabled(True)
-        self.button.setText("点击此按钮后点击游戏窗口"),
-        name = windows.GetProcessFileName(pid)
-        if not name:
-            QMessageBox.critical(
-                self, _TR("错误"), _TR("权限不足，请以管理员权限运行！")
-            )
-            return
-        _pids = ListProcess(name)
+        self.button.setText("点击此按钮后点击游戏窗口")
+        name = windows.GetProcessFileName(pid) or ""
+        if name:
+            pids = ListProcess(name)
+            if not pids:
+                pids = [pid]
+        else:
+            pids = [pid]
         self.processEdit.setText(name)
-        self.processIdEdit.setText(",".join([str(pid) for pid in _pids]))
+        self.processIdEdit.setText(",".join([str(process_id) for process_id in pids]))
         self.windowtext.setText(windows.GetWindowText(hwnd))
         self.processEdit.setCursorPosition(0)
         self.processIdEdit.setCursorPosition(0)
         self.windowtext.setCursorPosition(0)
-        self.selectedp = (_pids, name, hwnd)
-        self.testifneedadmin()
+        self.selectedp = (pids, name, hwnd)
 
     def closeEvent(self, e):
-        setattr(gobject.base, self.dialogattr, None)
+        gobject.base.BindWindowDialog = None
         super().closeEvent(e)
 
-    def __init__(
-        self,
-        parent,
-        callback,
-        hookselectdialog=None,
-        *,
-        dialogattr,
-        windowtitle,
-        iconkey,
-        description,
-    ):
+    def __init__(self, parent, callback):
         super().__init__(
             parent,
             poslist=globalconfig["attachprocessgeo"],
@@ -63,20 +48,14 @@ class _BaseProcessDialog(saveposwindow):
 
         self.iconcache = {}
 
-        self.dialogattr = dialogattr
         self.callback = callback
-        self.hookselectdialog = hookselectdialog
         self.selectedp = None
-        self.setWindowTitle(
-            windowtitle + "_当前权限_" + ("管理员" if windows.IsUserAnAdmin() else "非管理员")
-        )
+        self.setWindowTitle(_TR("绑定窗口"))
         self.setWindowIcon(
-            qtawesome.icon(globalconfig["toolbutton"]["buttons"][iconkey]["icon"])
+            qtawesome.icon(globalconfig["toolbutton"]["buttons"]["bindwindow"]["icon"])
         )
         w = QWidget()
         self.layout1 = QVBoxLayout(w)
-        self.label = LLabel(description)
-        self.label.setWordWrap(True)
 
         class __LPushButton(LPushButton):
             def sizeHint(self):
@@ -96,7 +75,11 @@ class _BaseProcessDialog(saveposwindow):
                 mouseselectwindow(self.setcurrentpidpnamesignal.emit),
             )
         )
-        self.layout1.addWidget(self.label)
+        self.layout1.addWidget(
+            LLabel(
+                "如果没看见想要附加的进程，可以尝试点击下方按钮后点击游戏窗口,或者尝试使用管理员权限运行本软件"
+            )
+        )
         self.layout1.addWidget(self.button)
         self.layout2 = QHBoxLayout()
         self.processIdEdit = QLineEdit()
@@ -124,13 +107,7 @@ class _BaseProcessDialog(saveposwindow):
         refreshbutton = LPushButton("刷新")
         refreshbutton.clicked.connect(self.refreshfunction)
         bottomlayout.addWidget(refreshbutton)
-        autoopen = LCheckBox("打开选择文本窗口")
-        autoopen.setChecked(globalconfig.get("autoopenselecttext", True))
-        autoopen.stateChanged.connect(
-            lambda x: globalconfig.__setitem__("autoopenselecttext", x)
-        )
         bottomlayout.addStretch(1)
-        bottomlayout.addWidget(autoopen)
         bottomlayout.addWidget(self.buttonBox)
 
         self.layout1.addLayout(bottomlayout)
@@ -142,18 +119,7 @@ class _BaseProcessDialog(saveposwindow):
         self.processIdEdit.setValidator(
             QRegularExpressionValidator(QRegularExpression("([0-9]+,)*"))
         )
-        # self.processEdit.setReadOnly(True)
         self.processEdit.textEdited.connect(self.filterproc)
-
-    @property
-    def adminicon(self):
-        return QApplication.style().standardIcon(QStyle.StandardPixmap.SP_VistaShield)
-
-    def testifneedadmin(self):
-        icon = self.adminicon
-        pids: "list[int]" = self.selectedp[0]
-        btn = self.buttonBox.button(QDialogButtonBox.StandardButton.Ok)
-        btn.setIcon(icon if not test_injectable(pids) else QIcon())
 
     def filterproc(self):
         self.processIdEdit.clear()
@@ -173,11 +139,14 @@ class _BaseProcessDialog(saveposwindow):
         self.processIdEdit.clear()
         self.selectedp = None
 
-        ###########################
         self.model = QStandardItemModel(self.processList)
-        self.processlist = ListProcess()
+        self.processlist = {}
         self.processList.setModel(self.model)
-        for pexe in self.processlist:
+        for pexe, pids in ListProcess().items():
+            hwnd = self.guesshwnd(pids)
+            if not hwnd:
+                continue
+            self.processlist[pexe] = (pids, hwnd)
             if pexe in self.iconcache:
                 icon = self.iconcache[pexe]
             else:
@@ -192,8 +161,6 @@ class _BaseProcessDialog(saveposwindow):
             self.model.appendRow(item)
 
     def showEvent(self, e):
-        if self.hookselectdialog:
-            self.hookselectdialog.realshowhide.emit(False)
         self.refreshfunction()
         return super().showEvent(e)
 
@@ -208,14 +175,15 @@ class _BaseProcessDialog(saveposwindow):
         if len(pids) == 0:
             self.windowtext.clear()
             self.processEdit.clear()
+            self.selectedp = None
             return
+        hwnd = self.guesshwnd(pids)
         self.selectedp = (
             pids,
-            windows.GetProcessFileName(pids[0]),
-            self.guesshwnd(pids),
+            windows.GetProcessFileName(pids[0]) or "",
+            hwnd,
         )
-        self.testifneedadmin()
-        self.windowtext.setText(windows.GetWindowText(self.selectedp[-1]))
+        self.windowtext.setText(windows.GetWindowText(hwnd) if hwnd else "")
         self.processEdit.setText(self.selectedp[1])
         self.windowtext.setCursorPosition(0)
         self.processEdit.setCursorPosition(0)
@@ -225,12 +193,11 @@ class _BaseProcessDialog(saveposwindow):
             return self.currentChanged_Ori(index, __)
         self.processList.scrollTo(index)
         pexe = self.model.itemFromIndex(index).text()
-        pids = self.processlist.get(pexe, [])
+        pids, hwnd = self.processlist.get(pexe, ([], 0))
         self.processEdit.setText(pexe)
-        self.processIdEdit.setText(",".join([str(pid) for pid in pids]))
-        self.selectedp = pids, pexe, self.guesshwnd(pids)
-        self.testifneedadmin()
-        self.windowtext.setText(windows.GetWindowText(self.selectedp[-1]))
+        self.processIdEdit.setText(",".join([str(process_id) for process_id in pids]))
+        self.selectedp = (pids, pexe, hwnd)
+        self.windowtext.setText(windows.GetWindowText(hwnd))
         self.processEdit.setCursorPosition(0)
         self.processIdEdit.setCursorPosition(0)
         self.windowtext.setCursorPosition(0)
@@ -239,33 +206,13 @@ class _BaseProcessDialog(saveposwindow):
     def guesshwnd(self, pids):
         for pid in pids:
             hwnd = GetProcessFirstWindow(pid)
-            if (hwnd) != 0:
+            if hwnd != 0:
                 return hwnd
         return 0
 
     def accept(self):
-        if self.selectedp is None:
+        if self.selectedp is None or not self.selectedp[-1]:
             self.close()
-        else:
-            if self.selectedp[1] is None:
-                QMessageBox.critical(
-                    self, _TR("错误"), _TR("权限不足，请以管理员权限运行！")
-                )
-                return
-            self.close()
-            self.callback(self.selectedp, self.windowtext.text())
-
-
-@Singleton
-class AttachProcessDialog(_BaseProcessDialog):
-
-    def __init__(self, parent, callback, hookselectdialog=None):
-        super().__init__(
-            parent,
-            callback,
-            hookselectdialog,
-            dialogattr="AttachProcessDialog",
-            windowtitle="选择进程",
-            iconkey="selectgame",
-            description="如果没看见想要附加的进程，可以尝试点击下方按钮后点击游戏窗口,或者尝试使用管理员权限运行本软件",
-        )
+            return
+        self.close()
+        self.callback(self.selectedp)

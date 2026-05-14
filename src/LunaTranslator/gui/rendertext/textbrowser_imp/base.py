@@ -121,6 +121,8 @@ class base(QWidget):
         return self._m_text
 
     def setText(self, text):
+        if isinstance(text, str) and text:
+            text = unicodedata.normalize("NFC", text)
         self._m_text = text
 
     def paintEvent(self, event):

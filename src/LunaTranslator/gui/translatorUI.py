@@ -844,6 +844,7 @@ class TranslatorWindow(resizableframeless):
                 "bindwindow",
                 buttonfunctions(
                     clicked=self.bindcropwindow_signal.emit,
+                    rightclick=lambda: gobject.base.createbindwindow(),
                     colorstate=lambda: self.isbindedwindow,
                 ),
             ),
