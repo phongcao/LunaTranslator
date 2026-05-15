@@ -15,14 +15,27 @@ from traceback import print_exc
 
 
 class OCRRegionDispatch:
-    def __init__(self, region_id: str, rect, result: OCRResultParsed, order: int):
+    def __init__(
+        self,
+        region_id: str,
+        rect,
+        result: OCRResultParsed,
+        order: int,
+        text: str = None,
+        isocrtranslate: bool = None,
+        vertical: bool = None,
+    ):
         self.region_id = region_id
         self.rect = rect
         self.result = result
         self.order = order
-        self.text = result.textonly if result else ""
-        self.isocrtranslate = bool(result and result.result.isocrtranslate)
-        self.vertical = bool(result and result.result.vertical)
+        self.text = result.textonly if result else (text or "")
+        if isocrtranslate is None:
+            isocrtranslate = bool(result and result.result.isocrtranslate)
+        if vertical is None:
+            vertical = bool(result and result.result.vertical)
+        self.isocrtranslate = bool(isocrtranslate)
+        self.vertical = bool(vertical)
 
 
 class OCRMultiRegionDispatch:
@@ -112,16 +125,33 @@ class rangemanger:
         self.ref = ref
         self.region_id = uuid.uuid4().hex
         self.range_ui = rangeadjust(gobject.base.settin_ui, ranges)
+        self.range_ui.setsourcetextvisiblegetter(self._currentsourcetextvisible)
         self.savelastimg: cvMat = None
         self.savelastrecimg: cvMat = None
         self.lastocrtime: float = 0
         self.savelasttext: str = None
+        self.last_detected_has_text = False
 
     def __del__(self):
         self.range_ui.closesignal.emit()
 
+    def _currentsourcetextvisible(self):
+        return self.last_detected_has_text
+
+    def _updatesourcetextstate(self, text: str):
+        self.last_detected_has_text = bool(text and text.strip())
+
     def builddispatch(self, result: OCRResultParsed, order: int):
         return OCRRegionDispatch(self.region_id, self.range_ui.getrect(), result, order)
+
+    def buildtextdispatch(self, text: str, order: int):
+        return OCRRegionDispatch(
+            self.region_id,
+            self.range_ui.getrect(),
+            None,
+            order,
+            text=text,
+        )
 
     def getresmanual(self):
         rect = self.range_ui.getrect()
@@ -135,6 +165,7 @@ class rangemanger:
         self.savelastrecimg = self.savelastimg
         self.lastocrtime = time.time()
         self.savelasttext = result.textonly
+        self._updatesourcetextstate(result.textonly)
         return result
 
     def getresauto(self):
@@ -187,6 +218,7 @@ class rangemanger:
         result = ocr_run(imgr)
         t = result.textonly
         self.lastocrtime = time.time()
+        self._updatesourcetextstate(t)
         sim = NativeUtils.distance(self.savelasttext, t)
         self.savelasttext = t
         if sim < globalconfig["ocr_text_diff"]:

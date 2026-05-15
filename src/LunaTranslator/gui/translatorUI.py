@@ -750,6 +750,7 @@ class TranslatorWindow(resizableframeless):
                 ),
             ),
             ("history", lambda: gobject.base.transhis.showsignal.emit()),
+            ("clear_rendered_text", self.clearRenderedText),
             (
                 "noundict",
                 buttonfunctions(
@@ -1573,11 +1574,14 @@ class TranslatorWindow(resizableframeless):
 
     def showhideocrrange(self):
         try:
-            self.showhidestate = not self.showhidestate
-            self.refreshtoolicon()
-            gobject.base.textsource.showhiderangeui(self.showhidestate)
+            self.setocrrangevisible(not self.showhidestate)
         except:
             pass
+
+    def setocrrangevisible(self, visible: bool):
+        self.showhidestate = visible
+        self.refreshtoolicon()
+        gobject.base.textsource.showhiderangeui(visible)
 
     def clearstate(self):
         try:
@@ -1585,6 +1589,9 @@ class TranslatorWindow(resizableframeless):
             self.refreshtoolicon()
         except:
             pass
+
+    def clearRenderedText(self):
+        self.translate_text.clear()
 
     def bindcropwindowcallback(self, pid, hwnd):
         _pid = os.getpid()
@@ -1763,25 +1770,40 @@ class TranslatorWindow(resizableframeless):
     def clickRange(self):
         if globalconfig["sourcestatus2"]["ocr"]["use"] == False:
             return
-        self.showhidestate = False
-
-        rangeselct_function(functools.partial(self.afterrange, False))
+        textsource = getattr(gobject.base, "textsource", None)
+        had_ranges = bool(
+            textsource
+            and hasattr(textsource, "ranges")
+            and any(r.range_ui.getrect() for r in textsource.ranges)
+        )
+        rangeselct_function(
+            functools.partial(self.afterrange, False, had_ranges, self.showhidestate)
+        )
 
     def clickRangeclear(self):
         if globalconfig["sourcestatus2"]["ocr"]["use"] == False:
             return
-        self.showhidestate = False
-        rangeselct_function(functools.partial(self.afterrange, True))
+        textsource = getattr(gobject.base, "textsource", None)
+        had_ranges = bool(
+            textsource
+            and hasattr(textsource, "ranges")
+            and any(r.range_ui.getrect() for r in textsource.ranges)
+        )
+        rangeselct_function(
+            functools.partial(self.afterrange, True, had_ranges, self.showhidestate)
+        )
 
     @tryprint
-    def afterrange(self, clear, rect, img=None):
+    def afterrange(self, clear, had_ranges, previous_visible, rect, img=None):
         if clear or not globalconfig["multiregion"]:
             gobject.base.textsource.clearrange()
         gobject.base.textsource.newrangeadjustor()
         gobject.base.textsource.setrect(rect)
-        self.showhideocrrange()
-        if not globalconfig.get("showrangeafterrangeselect", True):
-            self.showhideocrrange()
+        if had_ranges:
+            target_visible = previous_visible
+        else:
+            target_visible = globalconfig.get("showrangeafterrangeselect", True)
+        self.setocrrangevisible(target_visible)
 
         def __():
             # 选取范围后立即直接一次，期间不要让自动之前去瞎跑以免浪费一次。

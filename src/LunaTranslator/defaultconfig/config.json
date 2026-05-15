@@ -467,6 +467,7 @@
     "buttoncolor": "#2e2eff",
     "buttoncolor_1": "#ff03f2",
     "ocrrangecolor": "#000000",
+    "ocr_overlay_opacity": 88,
     "tagNameRemap": {},
     "dialog_savegame_layout": {
         "layout": "updown",
@@ -519,6 +520,7 @@
             "edittrans",
             "showraw",
             "history",
+            "clear_rendered_text",
             "noundict",
             "fix",
             "langdu",
@@ -744,6 +746,12 @@
                 "use": true,
                 "tip": "显示/隐藏历史文本",
                 "icon": "fa.history",
+                "align": 2
+            },
+            "clear_rendered_text": {
+                "use": true,
+                "tip": "清空工具栏文本",
+                "icon": "fa.eraser",
                 "align": 2
             },
             "gamepad_new": {

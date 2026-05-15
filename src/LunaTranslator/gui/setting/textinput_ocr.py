@@ -47,6 +47,15 @@ def __ocr_render_mode_changed(_):
         print_exc()
 
 
+def __ocr_overlay_style_changed(_):
+    try:
+        textsource = getattr(gobject.base, "textsource", None)
+        if textsource and hasattr(textsource, "setstyle"):
+            textsource.setstyle()
+    except:
+        print_exc()
+
+
 def __label1(self):
     threshold1label = QLabel()
     gobject.base.connectsignal(gobject.base.thresholdsett1, threshold1label.setText)
@@ -588,6 +597,35 @@ def internal(self):
                 callback=__ocr_render_mode_changed,
                 default=True,
             ),
+        ],
+        [
+            "Auto Hide Overlay",
+            D_getsimpleswitch(globalconfig, "ocr_overlay_autohide", default=False),
+            "",
+            "",
+            "",
+            "",
+            getsmalllabel("Delay"),
+            D_getspinbox(
+                1,
+                999,
+                globalconfig,
+                "ocr_overlay_autohide_delay",
+                default=5,
+            ),
+            "(s)",
+        ],
+        [
+            "Overlay Background Opacity",
+            D_getspinbox(
+                0,
+                100,
+                globalconfig,
+                "ocr_overlay_opacity",
+                callback=__ocr_overlay_style_changed,
+                default=88,
+            ),
+            "%",
         ],
     ]
     allothers = [

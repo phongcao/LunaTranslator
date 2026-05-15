@@ -42,6 +42,7 @@ from myutils.wrapper import threader, tryprint
 from gui.showword import searchwordW
 from myutils.hwnd import getExeIcon, getcurrexe
 from textio.textsource.copyboard import copyboard
+from textio.textsource.hookocr import hookocr
 from textio.textsource.texthook import texthook
 from textio.textsource.ocrtext import ocrtext, OCRMultiRegionDispatch
 from textio.textsource.textsourcebase import basetext
@@ -236,6 +237,29 @@ class BASEOBJECT(QObject):
         elif context == (True, True):
             return (self.currenttranslate_1, self.currenttext)[self.latest_is_origin]
 
+    @staticmethod
+    def _text_source_kind(isFromHook=False, isOCR=False):
+        if isFromHook:
+            return "hook"
+        if isOCR:
+            return "ocr"
+        return "other"
+
+    @classmethod
+    def _ocr_payload_source_kind(cls, payload: OCRMultiRegionDispatch, isFromHook=False):
+        if payload and payload.regions:
+            if all(region.result is None for region in payload.regions):
+                return cls._text_source_kind(isFromHook=isFromHook)
+            return "ocr"
+        return cls._text_source_kind(isFromHook=isFromHook)
+
+    def _reader_accepts_current_text(self, reader: TTSbase):
+        if not reader:
+            return False
+        if reader.typename != "vieneutts":
+            return True
+        return self.current_text_source_kind == "hook"
+
     def __wheelhistory(self, offset: int):
         if not globalconfig.get("enable_wheel_history", True):
             return
@@ -282,6 +306,7 @@ class BASEOBJECT(QObject):
         self.currenttranslate = ""
         self.currenttranslate_1 = ""
         self.latest_is_origin = True
+        self.current_text_source_kind = "other"
         self.ocr_region_text_state: "dict[str, str]" = {}
         self.refresh_on_get_trans_signature = 0
         self.currentsignature = None
@@ -515,6 +540,7 @@ class BASEOBJECT(QObject):
             self.statusok = True
             self.currenttranslate = text
             self.latest_is_origin = False
+            self.current_text_source_kind = "ocr"
             return
         else:
             msgs = [
@@ -539,6 +565,7 @@ class BASEOBJECT(QObject):
         self.currenttext_raw = text
         self.statusok = False
         self.latest_is_origin = True
+        self.current_text_source_kind = "other"
         self.translation_ui.displayraw2.emit(text)
 
     def textgetmethod(
@@ -953,10 +980,16 @@ class BASEOBJECT(QObject):
             return
         if blank_region_ids:
             self._ocr_clear_region_text_state(blank_region_ids)
-            self._ocr_region_invoke(
-                textsource.clear_region_translation,
-                blank_region_ids,
+            should_defer_blank_clear = (
+                is_auto_run
+                and (not isFromHook)
+                and globalconfig.get("ocr_overlay_autohide", False)
             )
+            if not should_defer_blank_clear:
+                self._ocr_region_invoke(
+                    textsource.clear_region_translation,
+                    blank_region_ids,
+                )
         if not prepared_regions:
             return True
         region_ids = [region.region_id for region, _ in prepared_regions]
@@ -983,6 +1016,9 @@ class BASEOBJECT(QObject):
             self.currenttranslate = ""
             self.currenttranslate_1 = ""
             self.latest_is_origin = True
+            self.current_text_source_kind = self._ocr_payload_source_kind(
+                payload, isFromHook=isFromHook
+            )
             if globalconfig["read_raw"]:
                 self.readcurrent()
             self.dispatchoutputer(plain_text, True)
@@ -1114,6 +1150,9 @@ class BASEOBJECT(QObject):
 
             self.translation_ui.displayraw1.emit(text, updateTranslate, is_auto_run)
             if statusok and not isRefresh:
+                self.current_text_source_kind = self._text_source_kind(
+                    isFromHook=isFromHook
+                )
                 self.transhis.getnewsentencesignal.emit(text)
             self.maybesetedittext(text)
             return
@@ -1127,6 +1166,9 @@ class BASEOBJECT(QObject):
                 self.currenttranslate = ""
                 self.currenttranslate_1 = ""
                 self.latest_is_origin = True
+                self.current_text_source_kind = self._text_source_kind(
+                    isFromHook=isFromHook
+                )
                 if globalconfig["read_raw"]:
                     self.readcurrent()
                 self.dispatchoutputer(text, True)
@@ -1515,6 +1557,8 @@ class BASEOBJECT(QObject):
                         self.specialreaders[key] = -1
         if reader is None:
             return
+        if not self._reader_accepts_current_text(reader):
+            return
         text2 = self.ttsrepair(text1, self.__usewhich())
         self.audioplayer.timestamp = uuid.uuid4()
         reader.read(text2, force, self.audioplayer.timestamp)
@@ -1597,20 +1641,34 @@ class BASEOBJECT(QObject):
         self.textsource = None
         if checked:
             classes = {
+                "hookocr": hookocr,
                 "ocr": ocrtext,
                 "copy": copyboard,
                 "texthook": texthook,
                 "filetrans": filetrans,
                 "mssr": mssr,
             }
-            if use is None:
-                use = list(
-                    filter(
-                        lambda _: globalconfig["sourcestatus2"][_]["use"],
-                        classes.keys(),
-                    )
+            hybrid_enabled = (
+                globalconfig["sourcestatus2"]["texthook"]["use"]
+                and globalconfig["sourcestatus2"]["ocr"]["use"]
+                and not any(
+                    globalconfig["sourcestatus2"][_]["use"]
+                    for _ in ("copy", "filetrans", "mssr")
                 )
-                use = None if len(use) == 0 else use[0]
+            )
+            if use is None:
+                if hybrid_enabled:
+                    use = "hookocr"
+                else:
+                    use = list(
+                        filter(
+                            lambda _: globalconfig["sourcestatus2"][_]["use"],
+                            ("ocr", "copy", "texthook", "filetrans", "mssr"),
+                        )
+                    )
+                    use = None if len(use) == 0 else use[0]
+            elif hybrid_enabled and use in ("ocr", "texthook"):
+                use = "hookocr"
             if use is None:
                 return
             else:

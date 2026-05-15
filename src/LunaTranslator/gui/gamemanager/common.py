@@ -100,15 +100,24 @@ def startgame(gameuid):
         if os.path.exists(game):
             mode = savehook_new_data[gameuid].get("onloadautochangemode2", 0)
             if mode > 0:
-                _ = {1: "texthook", 2: "copy", 3: "ocr"}
-                if globalconfig["sourcestatus2"][_[mode]]["use"] == False:
-                    globalconfig["sourcestatus2"][_[mode]]["use"] = True
-
+                mode_map = {
+                    1: {"texthook"},
+                    2: {"copy"},
+                    3: {"ocr"},
+                    4: {"texthook", "ocr"},
+                }
+                enabled = mode_map.get(mode)
+                if enabled:
+                    changed = False
                     for k in globalconfig["sourcestatus2"]:
-                        globalconfig["sourcestatus2"][k]["use"] = k == _[mode]
-                        gobject.base.sourceswitchs.emit(k, k == _[mode])
-
-                    gobject.base.starttextsource(use=_[mode], checked=True)
+                        use = k in enabled
+                        changed = changed or (
+                            globalconfig["sourcestatus2"][k]["use"] != use
+                        )
+                        globalconfig["sourcestatus2"][k]["use"] = use
+                        gobject.base.sourceswitchs.emit(k, use)
+                    if changed:
+                        gobject.base.starttextsource()
 
             threader(localeswitchedrun)(gameuid)
     except:

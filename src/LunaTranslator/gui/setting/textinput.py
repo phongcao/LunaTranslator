@@ -299,6 +299,30 @@ def selectfile(self):
         print_exc()
 
 
+def switchtextsourcemode(self, key, checked):
+    sources = globalconfig["sourcestatus2"]
+    hybrid_keys = {"texthook", "ocr"}
+    if checked:
+        if key in hybrid_keys:
+            for name in sources:
+                if name in hybrid_keys:
+                    continue
+                sources[name]["use"] = False
+                btn = self.sourceswitchs.get(name)
+                if btn:
+                    btn.setChecked(False)
+        else:
+            for name in sources:
+                enabled = name == key
+                sources[name]["use"] = enabled
+                if name == key:
+                    continue
+                btn = self.sourceswitchs.get(name)
+                if btn:
+                    btn.setChecked(enabled)
+    gobject.base.starttextsource()
+
+
 def createdownloadprogress(self):
 
     downloadprogress = QProgressBar()
@@ -824,20 +848,23 @@ def setTabOne_lazy(self, basel: QVBoxLayout):
     __ = []
     for key, name in _rank:
         __.append(getsmalllabel(name))
+        callback = functools.partial(switchtextsourcemode, self, key)
+        if key not in ("texthook", "ocr"):
+            callback = functools.partial(
+                yuitsu_switch,
+                self,
+                globalconfig["sourcestatus2"],
+                "sourceswitchs",
+                key,
+                gobject.base.starttextsource,
+            )
         __.append(
             D_getsimpleswitch(
                 globalconfig["sourcestatus2"][key],
                 "use",
                 name=key,
                 parent=self,
-                callback=functools.partial(
-                    yuitsu_switch,
-                    self,
-                    globalconfig["sourcestatus2"],
-                    "sourceswitchs",
-                    key,
-                    gobject.base.starttextsource,
-                ),
+                callback=callback,
                 pair="sourceswitchs",
             )
         )

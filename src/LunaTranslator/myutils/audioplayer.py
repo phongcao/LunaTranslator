@@ -112,7 +112,6 @@ class series_audioplayer:
                     if self.tasks and not (
                         globalconfig["ttsnointerrupt"] and (not self.tasks[-1])
                     ):
-                        print(self.tasks)
                         break
                 else:
                     if self.playovercallback:

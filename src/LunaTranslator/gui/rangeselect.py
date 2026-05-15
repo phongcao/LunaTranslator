@@ -1,6 +1,7 @@
 from qtsymbols import *
 from collections import OrderedDict
 import html
+import time
 import windows, NativeUtils, gobject
 from myutils.config import globalconfig
 from myutils.hwnd import safepixmap
@@ -149,11 +150,18 @@ class OCRRegionTextEdit(QTextEdit):
         pal.setColor(QPalette.ColorRole.Base, Qt.GlobalColor.transparent)
         self.setPalette(pal)
         self.document().setDocumentMargin(0)
+        self.applystyle()
+
+    def applystyle(self):
+        opacity = max(0, min(100, int(globalconfig.get("ocr_overlay_opacity", 88))))
+        background_alpha = int(round(255 * opacity / 100))
+        border_alpha = int(round(32 * opacity / 100))
         self.setStyleSheet(
-            "background-color: rgba(0, 0, 0, 224);"
+            "background-color: rgba(0, 0, 0, %s);"
             "border-radius: 4px;"
-            "border: 1px solid rgba(255, 255, 255, 32);"
+            "border: 1px solid rgba(255, 255, 255, %s);"
             "padding: 6px;"
+            % (background_alpha, border_alpha)
         )
 
 
@@ -264,6 +272,7 @@ class rangeadjust(Mainw):
         self._rect = None
         self.tracepos = QPoint()
         self._isTracking = False
+        self.__suspend_rect_sync = 0
         self.label = None
         self.drag_label = None
         self.translation_overlay = None
@@ -275,12 +284,19 @@ class rangeadjust(Mainw):
         self.__capture_suppressed = False
         self.__translation_cycle = None
         self.__translation_entries: "OrderedDict[str, dict]" = OrderedDict()
+        self.__last_translation_time = 0.0
+        self.__autohide_active = False
+        self.__source_text_visible_getter = None
         self.ranges: list = ranges
         self.traceoffsetsignal.connect(self.traceoffset)
         self.label = QLabel(self)
         self.translation_overlay = OCRRegionTextOverlay(self)
         self.translation_label = self.translation_overlay.text
         self.translation_overlay.hide()
+        self.__autohide_timer = QTimer(self)
+        self.__autohide_timer.setInterval(500)
+        self.__autohide_timer.timeout.connect(self.__check_autohide)
+        self.__autohide_timer.start()
         self.setstyle()
         self.closesignal.connect(self.close)
         self.drag_label = QLabel(self)
@@ -301,6 +317,23 @@ class rangeadjust(Mainw):
 
     def onshowfanyswitch(self, _):
         self.refreshtranslation()
+
+    def _windowratio(self):
+        try:
+            ratio = NativeUtils.GetDevicePixelRatioF(int(self.winId()))
+        except:
+            ratio = 0
+        if not ratio:
+            ratio = self.devicePixelRatioF()
+        return ratio or 1
+
+    def _suspendrectsync(self):
+        self.__suspend_rect_sync += 1
+        QTimer.singleShot(0, self._resumerectsync)
+
+    def _resumerectsync(self):
+        if self.__suspend_rect_sync:
+            self.__suspend_rect_sync -= 1
 
     def _applytransparentstate(self):
         transparent = (not self.__rangevisible) or self.__manual_mouse_transparent
@@ -330,6 +363,7 @@ class rangeadjust(Mainw):
         self.setMask(QRegion(outer).subtracted(QRegion(inner)))
 
     def setrangevisible(self, visible: bool):
+        self._suspendrectsync()
         self.__rangevisible = visible
         self.label.setVisible(visible)
         self.drag_label.setVisible(visible)
@@ -405,6 +439,7 @@ class rangeadjust(Mainw):
             globalconfig["showfanyi"]
             and bool(self.__translation_entries)
             and (not self.__capture_suppressed)
+            and (not self.__autohide_active)
         )
         if show_translation:
             margin = self.gripSize if self.__rangevisible else 0
@@ -435,6 +470,39 @@ class rangeadjust(Mainw):
         self.__capture_suppressed = suppressed
         self.refreshtranslation()
 
+    def setsourcetextvisiblegetter(self, getter):
+        self.__source_text_visible_getter = getter
+
+    def _currentsourcetextvisible(self):
+        if not self.__source_text_visible_getter:
+            return False
+        try:
+            return bool(self.__source_text_visible_getter())
+        except:
+            return False
+
+    def __check_autohide(self):
+        if not globalconfig.get("ocr_overlay_autohide", False):
+            if self.__autohide_active:
+                self.__autohide_active = False
+                self.refreshtranslation()
+            return
+        if not self.__translation_entries:
+            return
+        if self._currentsourcetextvisible():
+            if self.__autohide_active:
+                self.__autohide_active = False
+                self.refreshtranslation()
+            return
+        delay = globalconfig.get("ocr_overlay_autohide_delay", 5)
+        should_hide = (
+            self.__last_translation_time > 0
+            and time.time() - self.__last_translation_time >= delay
+        )
+        if should_hide != self.__autohide_active:
+            self.__autohide_active = should_hide
+            self.refreshtranslation()
+
     def begintranslationcycle(self, cycle_id: str):
         self.__translation_cycle = cycle_id
 
@@ -451,6 +519,8 @@ class rangeadjust(Mainw):
             )
         else:
             self.__translation_entries.pop(engine, None)
+        self.__last_translation_time = time.time()
+        self.__autohide_active = False
         self.refreshtranslation()
 
     def cleartranslation(self):
@@ -483,6 +553,7 @@ class rangeadjust(Mainw):
                 1 / 255,
             )
         )
+        self.translation_label.applystyle()
 
     def mouseMoveEvent(self, e: QMouseEvent):
         if not self.__rangevisible:
@@ -515,14 +586,29 @@ class rangeadjust(Mainw):
         return _
 
     def setGeometry(self, x, y, w, h):
-        windows.MoveWindow(int(self.winId()), x, y, w, h, True)
+        ratio = self._windowratio()
+        QMainWindow.setGeometry(
+            self,
+            int(round(x / ratio)),
+            int(round(y / ratio)),
+            int(round(w / ratio)),
+            int(round(h / ratio)),
+        )
+        windows.MoveWindow(
+            int(self.winId()),
+            int(round(x)),
+            int(round(y)),
+            int(round(w)),
+            int(round(h)),
+            True,
+        )
 
     def geometry(self):
         rect = windows.GetWindowRect(int(self.winId()))
         return QRect(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
 
     def moveEvent(self, _):
-        if self._rect:
+        if self._rect and (not self.__suspend_rect_sync):
             self._rect = self.rectoffset(self.geometry())
         self.refreshtranslation()
 
@@ -542,7 +628,7 @@ class rangeadjust(Mainw):
 
         self.label.setGeometry(0, 0, self.width(), self.height())
         self._updateinteractivemask()
-        if self._rect:
+        if self._rect and (not self.__suspend_rect_sync):
             self._rect = self.rectoffset(self.geometry())
         self.refreshtranslation()
         super().resizeEvent(a0)
@@ -560,6 +646,7 @@ class rangeadjust(Mainw):
         if rect:
             (x1, y1), (x2, y2) = rect
             r = self.devicePixelRatioF()
+            self._suspendrectsync()
             self.setGeometry(
                 x1 - int(globalconfig.get("ocrrangewidth", 2) * r),
                 y1 - int(globalconfig.get("ocrrangewidth", 2) * r),

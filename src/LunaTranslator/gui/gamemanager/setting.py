@@ -607,7 +607,7 @@ class dialog_setting_game_internal(QWidget):
         formLayout.addRow(
             "自动切换到模式",
             getsimplecombobox(
-                ["不切换", "HOOK", "剪贴板", "OCR"],
+                ["不切换", "HOOK", "剪贴板", "OCR", "HOOK+OCR"],
                 savehook_new_data[gameuid],
                 "onloadautochangemode2",
                 default=0,
