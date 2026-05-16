@@ -54,6 +54,76 @@ class HOSTINFO:
     EmuConnected = 3
 
 
+EMBED_LEGACY_CHARSET_MAP = [
+    0,
+    1,
+    128,
+    134,
+    136,
+    129,
+    163,
+    222,
+    161,
+    178,
+    177,
+    162,
+    238,
+    186,
+    204,
+]
+
+EMBED_AUTO_CHARSET_BY_LANGUAGE = {
+    "ja": 128,
+    "zh": 134,
+    "cht": 136,
+    "ko": 129,
+    "vi": 163,
+    "ar": 178,
+    "th": 222,
+    "tr": 162,
+    "ru": 204,
+    "uk": 204,
+    "pl": 238,
+    "cs": 238,
+    "hu": 238,
+}
+
+EMBED_AUTO_FONT_FAMILIES_BY_LANGUAGE = {
+    "vi": ["Tahoma", "Arial", "Segoe UI", "Times New Roman"],
+}
+
+
+def resolve_embed_font_family(embedconfig: dict, target_language_code: str):
+    if embedconfig.get("changefont", False):
+        return embedconfig.get("changefont_font", "")
+
+    candidates = EMBED_AUTO_FONT_FAMILIES_BY_LANGUAGE.get(target_language_code)
+    if not candidates:
+        return ""
+
+    font_database = QFontDatabase()
+    available_families = set(font_database.families())
+    for family in candidates:
+        if family in available_families:
+            return family
+
+    return QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family()
+
+
+def resolve_embed_charset(embedconfig: dict, target_language_code: str, font_family: str):
+    if embedconfig.get("changecharset", False):
+        index = embedconfig.get("changecharset_charset", 0)
+        if 0 <= index < len(EMBED_LEGACY_CHARSET_MAP):
+            return EMBED_LEGACY_CHARSET_MAP[index], True
+        return 0, False
+
+    auto_charset = EMBED_AUTO_CHARSET_BY_LANGUAGE.get(target_language_code)
+    if font_family and auto_charset is not None:
+        return auto_charset, True
+
+    return 0, False
+
+
 class ThreadParam(Structure):
     _fields_ = [
         ("processId", c_uint),
@@ -234,6 +304,7 @@ class texthook(basetext):
             c_bool,
             c_bool,
             c_float,
+            c_bool,
             c_bool,
         )
         self.Luna_CheckIsUsingEmbed = LunaHost.Luna_CheckIsUsingEmbed
@@ -598,23 +669,24 @@ class texthook(basetext):
             pids = [pid]
         else:
             pids = self.pids[self.gameuid].copy()
+        font_family = resolve_embed_font_family(self.embedconfig, getlangtgt().code)
+        font_charset, font_charset_enabled = resolve_embed_charset(
+            self.embedconfig, getlangtgt().code, font_family
+        )
         for pid in pids:
             self.Luna_SettingsEx(
                 pid,
                 int(1000 * self.embedconfig["timeout_translate"]),
-                2,  # static_data["charsetmap"][globalconfig['embedded']['changecharset_charset']]
-                False,  # globalconfig['embedded']['changecharset']
-                (
-                    self.embedconfig["changefont_font"]
-                    if self.embedconfig["changefont"]
-                    else ""
-                ),
+                font_charset,
+                font_charset_enabled,
+                font_family,
                 self.embedconfig["displaymode"],
                 True,
                 self.embedconfig["clearText"],
                 self.embedconfig["changefontsize_use"],
                 self.embedconfig["changefontsize"],
                 True,
+                self.embedconfig["experimental_kirikiri_textbox"],
             )
 
     def onremovehook(self, hc, hn: bytes, tp):

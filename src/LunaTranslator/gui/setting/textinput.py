@@ -135,6 +135,14 @@ def gethookgrid_em(self):
             ),
         ],
         [
+            "实验性KiriKiri文本框兼容",
+            D_getsimpleswitch(
+                globalconfig["embedded"],
+                "experimental_kirikiri_textbox",
+                callback=lambda _: gobject.base.textsource.set_settings_ex(),
+            ),
+        ],
+        [
             "内嵌安全性检查",
             D_getsimpleswitch(globalconfig["embedded"], "safecheck_use"),
             D_getIconButton(

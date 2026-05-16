@@ -43,6 +43,17 @@ namespace
   {
     return Hijack::Disable_Font_Switch ? L"" : commonsharedmem->fontFamily;
   }
+
+  template <typename CharT, size_t N>
+  void copyFontFaceName(CharT (&dest)[N], const std::basic_string<CharT> &src)
+  {
+    size_t count = src.size();
+    if (count >= N)
+      count = N - 1;
+    if (count)
+      memcpy(dest, src.c_str(), count * sizeof(CharT));
+    dest[count] = 0;
+  }
 }
 namespace
 { // unnamed
@@ -185,10 +196,7 @@ namespace
 
     std::wstring s = maybe_disabled_fontFamily();
     if (!s.empty())
-    {
-      lplf->lfFaceName[s.size()] = 0;
-      memcpy(lplf->lfFaceName, s.c_str(), s.size());
-    }
+      copyFontFaceName(lplf->lfFaceName, s);
   }
 
   // LogFont manager
@@ -246,7 +254,6 @@ namespace
     HDC hdc_;
     HFONT oldFont_,
         newFont_;
-    std::wstring newfontname;
 
   public:
     explicit DCFontSwitcher(HDC hdc); // pass 0 to disable this class
@@ -275,7 +282,7 @@ namespace
     return commonsharedmem->FontSizeRelative != 1;
   }
   DCFontSwitcher::DCFontSwitcher(HDC hdc)
-      : hdc_(hdc), oldFont_(nullptr), newFont_(nullptr), newfontname(L"")
+      : hdc_(hdc), oldFont_(nullptr), newFont_(nullptr)
   {
     if (!hdc_)
       return;
@@ -305,15 +312,12 @@ namespace
     if (std::wstring(maybe_disabled_fontFamily()).empty())
       ::GetTextFaceW(hdc_, LF_FACESIZE, lf.lfFaceName);
     else
-    {
-      wcscpy(lf.lfFaceName, maybe_disabled_fontFamily());
-    }
+      copyFontFaceName(lf.lfFaceName, std::wstring(maybe_disabled_fontFamily()));
     newFont_ = fonts_.get(lf);
-    if ((!newFont_) || (newfontname != std::wstring(maybe_disabled_fontFamily())))
+    if (!newFont_)
     {
       newFont_ = Hijack::oldCreateFontIndirectW(&lf);
       fonts_.add(newFont_, lf);
-      newfontname = std::wstring(maybe_disabled_fontFamily());
     }
     oldFont_ = (HFONT)SelectObject(hdc_, newFont_);
   }
@@ -349,14 +353,13 @@ HFONT WINAPI Hijack::newCreateFontIndirectA(const LOGFONTA *lplf)
           ::strcpy(lf.a.lfFaceName, WideStringToString(fontFamily, CP_ACP).c_str());
         else
         {
-          lf.w.lfFaceName[fontFamily.size()] = 0;
-          memcpy(lf.w.lfFaceName, fontFamily.c_str(), fontFamily.size());
+          copyFontFaceName(lf.w.lfFaceName, fontFamily);
           usewapi = true;
         }
       }
     }
     if (usewapi)
-      oldCreateFontIndirectW(&lf.w);
+      return oldCreateFontIndirectW(&lf.w);
     return oldCreateFontIndirectA(&lf.a);
   }
   //}
@@ -442,7 +445,7 @@ HFONT WINAPI Hijack::newCreateFontW(int nHeight, int nWidth, int nEscapement, in
       nHeight *= s->fontScale;
     }*/
     if (!std::wstring(maybe_disabled_fontFamily()).empty())
-      lpszFace = (LPCWSTR)commonsharedmem;
+      lpszFace = maybe_disabled_fontFamily();
   }
   return oldCreateFontW(CREATE_FONT_ARGS);
 }

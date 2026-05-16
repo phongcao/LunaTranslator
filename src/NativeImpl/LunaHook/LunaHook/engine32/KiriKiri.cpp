@@ -1,5 +1,532 @@
 #include "KiriKiri.h"
 
+namespace
+{
+  bool gPreferKrkr2wcsHook = false;
+  constexpr uint64_t kKiriKiriWideEmbedFontHooks =
+      F_GetGlyphOutlineW |
+      F_GetTextExtentPoint32W |
+      F_GetTextExtentExPointW |
+      F_TextOutW |
+      F_ExtTextOutW |
+      F_DrawTextW |
+      F_DrawTextExW;
+
+  std::mutex gKiriKiriRenderTranslationMutex;
+  std::mutex gKiriKiriGlyphStateMutex;
+  std::unordered_map<std::wstring, std::wstring> gKiriKiriRenderTranslations;
+  std::atomic<bool> gKiriKiriExperimentalTextboxEnabled = false;
+
+  struct PendingKiriKiriGlyphLine
+  {
+    std::wstring original;
+    std::wstring translated;
+    std::vector<std::wstring> translatedRows;
+    size_t consumed = 0;
+    size_t emittedRows = 0;
+    uintptr_t lastDrawX = 0;
+    bool hasLastDrawX = false;
+  };
+  std::unordered_map<DWORD, std::deque<PendingKiriKiriGlyphLine>> gKiriKiriPendingGlyphLines;
+
+  bool isExperimentalKiriKiriTextboxEnabled()
+  {
+    auto enabled = commonsharedmem && commonsharedmem->experimentalKiriKiriTextbox;
+    auto wasEnabled = gKiriKiriExperimentalTextboxEnabled.exchange(enabled);
+    if (wasEnabled && !enabled)
+    {
+      std::scoped_lock lock(gKiriKiriRenderTranslationMutex, gKiriKiriGlyphStateMutex);
+      gKiriKiriRenderTranslations.clear();
+      gKiriKiriPendingGlyphLines.clear();
+    }
+    return enabled;
+  }
+
+  void rememberKiriKiriRenderTranslation(const std::wstring &original, const std::wstring &translated)
+  {
+    if (!isExperimentalKiriKiriTextboxEnabled() || original.empty() || translated.empty() || original == translated)
+      return;
+    std::scoped_lock lock(gKiriKiriRenderTranslationMutex);
+    if (gKiriKiriRenderTranslations.size() > 512)
+      gKiriKiriRenderTranslations.clear();
+    gKiriKiriRenderTranslations[original] = translated;
+  }
+
+      void appendKiriKiriRenderedLineBreak(std::wstring &text)
+      {
+        text.push_back(L'\r');
+      }
+
+      bool isKiriKiriRenderedLineBreak(wchar_t ch)
+      {
+        return ch == L'\r' || ch == L'\n';
+      }
+
+      size_t measureKiriKiriRenderedCharWidthUnits(wchar_t ch)
+      {
+        if (isKiriKiriRenderedLineBreak(ch))
+          return 0;
+        if (ch == L' ')
+          return 3;
+        if (ch == L'\t')
+          return 12;
+
+        if (ch < 0x80)
+        {
+          switch (ch)
+          {
+          case L'i':
+          case L'l':
+          case L'I':
+          case L'!':
+          case L'|':
+          case L'\'':
+          case L'`':
+          case L'.':
+          case L',':
+          case L':':
+          case L';':
+            return 3;
+          case L'm':
+          case L'w':
+          case L'M':
+          case L'W':
+          case L'@':
+          case L'%':
+          case L'&':
+          case L'Q':
+          case L'O':
+            return 8;
+          default:
+            break;
+          }
+          if ((ch >= L'0' && ch <= L'9') || (ch >= L'A' && ch <= L'Z') || (ch >= L'a' && ch <= L'z'))
+            return 6;
+          return 5;
+        }
+
+        if ((ch >= 0x2E80 && ch <= 0xA4CF) || (ch >= 0xAC00 && ch <= 0xD7AF) || (ch >= 0xF900 && ch <= 0xFAFF) || ch >= 0xFF01)
+          return 10;
+
+        return 7;
+      }
+
+      size_t measureKiriKiriRenderedWidthUnits(std::wstring_view text)
+      {
+        size_t units = 0;
+        for (auto ch : text)
+          units += measureKiriKiriRenderedCharWidthUnits(ch);
+        return units;
+      }
+
+  std::wstring wrapKiriKiriGlyphTranslation(const std::wstring &translated, size_t maxColumns = 64)
+  {
+        auto maxUnits = maxColumns * 6;
+        if (measureKiriKiriRenderedWidthUnits(translated) <= maxUnits)
+      return translated;
+
+    std::wstring wrapped;
+        size_t lineUnits = 0;
+    size_t wordStart = 0;
+    auto flushWord = [&](std::wstring_view word)
+    {
+      if (word.empty())
+        return;
+          auto wordUnits = measureKiriKiriRenderedWidthUnits(word);
+          auto needsSpace = lineUnits > 0;
+          auto spaceUnits = needsSpace ? measureKiriKiriRenderedCharWidthUnits(L' ') : 0;
+          if (needsSpace && lineUnits + spaceUnits + wordUnits > maxUnits)
+      {
+        appendKiriKiriRenderedLineBreak(wrapped);
+            lineUnits = 0;
+        needsSpace = false;
+            spaceUnits = 0;
+      }
+      if (needsSpace)
+      {
+        wrapped.push_back(L' ');
+            lineUnits += spaceUnits;
+      }
+      wrapped.append(word);
+          lineUnits += wordUnits;
+    };
+
+    for (size_t i = 0; i <= translated.size(); i++)
+    {
+      auto atEnd = i == translated.size();
+      auto ch = atEnd ? L' ' : translated[i];
+      if (isKiriKiriRenderedLineBreak(ch))
+      {
+        flushWord(std::wstring_view(translated).substr(wordStart, i - wordStart));
+        appendKiriKiriRenderedLineBreak(wrapped);
+        lineUnits = 0;
+        wordStart = i + 1;
+        while (wordStart < translated.size() && isKiriKiriRenderedLineBreak(translated[wordStart]))
+          wordStart += 1;
+        i = wordStart > 0 ? wordStart - 1 : wordStart;
+      }
+      else if (ch == L' ' || atEnd)
+      {
+        flushWord(std::wstring_view(translated).substr(wordStart, i - wordStart));
+        wordStart = i + 1;
+      }
+    }
+
+    return wrapped;
+  }
+
+  bool isKiriKiriLayoutSeparator(wchar_t ch)
+  {
+    return ch == L' ' || ch == L'\t' || ch == L'\r' || ch == L'\n' || ch == 0x3000;
+  }
+
+  bool isKiriKiriOriginalSentenceTerminator(wchar_t ch)
+  {
+    return ch == L'。' || ch == L'！' || ch == L'？';
+  }
+
+  bool isKiriKiriTranslatedSentenceTerminator(wchar_t ch)
+  {
+    return ch == L'.' || ch == L'!' || ch == L'?';
+  }
+
+  std::vector<std::wstring> splitKiriKiriSentenceSegments(const std::wstring &text, bool translated)
+  {
+    std::vector<std::wstring> segments;
+    size_t start = 0;
+
+    for (size_t i = 0; i < text.size(); ++i)
+    {
+      auto ch = text[i];
+      auto isTerminator = translated ? isKiriKiriTranslatedSentenceTerminator(ch) : isKiriKiriOriginalSentenceTerminator(ch);
+      if (!isTerminator)
+        continue;
+
+      size_t end = i + 1;
+      while (end < text.size())
+      {
+        auto next = text[end];
+        auto sameTerminator = translated ? isKiriKiriTranslatedSentenceTerminator(next) : isKiriKiriOriginalSentenceTerminator(next);
+        if (!sameTerminator)
+          break;
+        end += 1;
+      }
+      while (end < text.size() && isKiriKiriLayoutSeparator(text[end]))
+        end += 1;
+
+      if (end > start)
+        segments.push_back(text.substr(start, end - start));
+      start = end;
+      i = end > 0 ? end - 1 : end;
+    }
+
+    if (start < text.size())
+      segments.push_back(text.substr(start));
+
+    return segments;
+  }
+
+  bool hasKiriKiriSentenceLayoutSeparator(const std::wstring &text)
+  {
+    for (size_t i = 0; i + 1 < text.size(); ++i)
+    {
+      if (!isKiriKiriOriginalSentenceTerminator(text[i]))
+        continue;
+      if (isKiriKiriLayoutSeparator(text[i + 1]))
+        return true;
+    }
+    return false;
+  }
+
+  std::wstring joinKiriKiriSentenceSegmentsWithNewlines(const std::vector<std::wstring> &segments)
+  {
+    std::wstring joined;
+    for (size_t i = 0; i < segments.size(); ++i)
+    {
+      if (i > 0)
+        appendKiriKiriRenderedLineBreak(joined);
+      joined.append(segments[i]);
+    }
+    return joined;
+  }
+
+  std::vector<std::wstring> splitKiriKiriRenderedRows(const std::wstring &translated)
+  {
+    std::vector<std::wstring> rows;
+    size_t start = 0;
+
+    while (start < translated.size())
+    {
+      size_t end = start;
+      while (end < translated.size() && !isKiriKiriRenderedLineBreak(translated[end]))
+        end += 1;
+      rows.push_back(translated.substr(start, end - start));
+      while (end < translated.size() && isKiriKiriRenderedLineBreak(translated[end]))
+        end += 1;
+      start = end;
+    }
+
+    if (rows.empty())
+      rows.push_back(translated);
+    return rows;
+  }
+
+  std::vector<std::wstring> balanceKiriKiriRenderedRows(const std::wstring &translated, size_t maxRows)
+  {
+    if (maxRows == 0)
+      return splitKiriKiriRenderedRows(wrapKiriKiriGlyphTranslation(translated));
+
+    std::vector<std::wstring> words;
+    size_t index = 0;
+    while (index < translated.size())
+    {
+      while (index < translated.size() && isKiriKiriLayoutSeparator(translated[index]))
+        index += 1;
+      size_t start = index;
+      while (index < translated.size() && !isKiriKiriLayoutSeparator(translated[index]))
+        index += 1;
+      if (index > start)
+        words.push_back(translated.substr(start, index - start));
+    }
+
+    if (words.empty())
+      return {translated};
+
+    std::vector<size_t> wordUnits(words.size(), 0);
+    for (size_t i = 0; i < words.size(); ++i)
+      wordUnits[i] = measureKiriKiriRenderedWidthUnits(words[i]);
+
+    std::vector<size_t> suffixWordUnits(words.size() + 1, 0);
+    for (size_t i = words.size(); i-- > 0;)
+      suffixWordUnits[i] = suffixWordUnits[i + 1] + wordUnits[i];
+
+    auto remainingUnitsFrom = [&](size_t wordIndex)
+    {
+      if (wordIndex >= words.size())
+        return size_t{0};
+      auto remainingWords = words.size() - wordIndex;
+      return suffixWordUnits[wordIndex] + (remainingWords > 0 ? (remainingWords - 1) * measureKiriKiriRenderedCharWidthUnits(L' ') : 0);
+    };
+
+    std::vector<std::wstring> rows;
+    size_t wordIndex = 0;
+    while (wordIndex < words.size() && rows.size() + 1 < maxRows)
+    {
+      auto remainingRows = maxRows - rows.size();
+      auto targetUnits = (remainingUnitsFrom(wordIndex) + remainingRows - 1) / remainingRows;
+
+      auto row = words[wordIndex++];
+      size_t rowUnits = measureKiriKiriRenderedWidthUnits(row);
+      while (wordIndex < words.size())
+      {
+        auto projectedUnits = rowUnits + measureKiriKiriRenderedCharWidthUnits(L' ') + wordUnits[wordIndex];
+        if (projectedUnits > targetUnits)
+          break;
+        row.append(L" ");
+        row.append(words[wordIndex]);
+        rowUnits = projectedUnits;
+        wordIndex += 1;
+      }
+      rows.push_back(std::move(row));
+    }
+
+    std::wstring lastRow;
+    while (wordIndex < words.size())
+    {
+      if (!lastRow.empty())
+        lastRow.push_back(L' ');
+      lastRow.append(words[wordIndex]);
+      wordIndex += 1;
+    }
+    if (!lastRow.empty())
+      rows.push_back(std::move(lastRow));
+
+    if (rows.empty())
+      rows.push_back(translated);
+    return rows;
+  }
+
+  size_t estimateKiriKiriNativeRowBudget(const std::wstring &original, size_t maxRows)
+  {
+    if (maxRows <= 1)
+      return maxRows;
+
+    auto originalUnits = measureKiriKiriRenderedWidthUnits(original);
+    size_t estimatedRows = 1;
+    if (originalUnits >= 350)
+      estimatedRows = 2 + ((originalUnits - 350) / 250);
+
+    if (estimatedRows > maxRows)
+      estimatedRows = maxRows;
+    return estimatedRows;
+  }
+
+  void queueKiriKiriGlyphLine(const std::wstring &original, const std::wstring &translated)
+  {
+    if (!isExperimentalKiriKiriTextboxEnabled() || original.empty() || translated.empty())
+      return;
+    auto tid = GetCurrentThreadId();
+    std::scoped_lock lock(gKiriKiriGlyphStateMutex);
+    auto &queue = gKiriKiriPendingGlyphLines[tid];
+    if (queue.size() > 8)
+      queue.clear();
+
+    auto queueSegment = [&](const std::wstring &segmentOriginal, const std::wstring &segmentTranslated, bool wrapTranslated)
+    {
+      auto wrappedTranslated = wrapTranslated ? wrapKiriKiriGlyphTranslation(segmentTranslated) : segmentTranslated;
+      queue.push_back({segmentOriginal, wrappedTranslated, splitKiriKiriRenderedRows(wrappedTranslated)});
+    };
+
+    auto originalSegments = splitKiriKiriSentenceSegments(original, false);
+    auto translatedSegments = splitKiriKiriSentenceSegments(translated, true);
+    if (originalSegments.size() > 1 && !hasKiriKiriSentenceLayoutSeparator(original))
+    {
+      auto nativeRowBudget = estimateKiriKiriNativeRowBudget(original, originalSegments.size());
+      std::vector<std::wstring> balancedRows;
+      if (originalSegments.size() == translatedSegments.size())
+      {
+        auto joinedTranslated = joinKiriKiriSentenceSegmentsWithNewlines(translatedSegments);
+        balancedRows = balanceKiriKiriRenderedRows(joinedTranslated, nativeRowBudget);
+      }
+      else
+      {
+        balancedRows = balanceKiriKiriRenderedRows(translated, nativeRowBudget);
+      }
+
+      auto queuedTranslated = joinKiriKiriSentenceSegmentsWithNewlines(balancedRows);
+      queue.push_back({original, queuedTranslated, balancedRows});
+      return;
+    }
+
+    if (originalSegments.size() > 1 &&
+      originalSegments.size() == translatedSegments.size())
+    {
+      for (size_t i = 0; i < originalSegments.size(); ++i)
+        queueSegment(originalSegments[i], translatedSegments[i], false);
+      return;
+    }
+
+    queueSegment(original, translated, true);
+  }
+
+  std::optional<std::wstring> consumeKiriKiriGlyphLine(const std::wstring &glyph, uintptr_t drawX)
+  {
+    if (!isExperimentalKiriKiriTextboxEnabled() || glyph.empty())
+      return {};
+
+    auto tid = GetCurrentThreadId();
+    std::scoped_lock lock(gKiriKiriGlyphStateMutex);
+    auto found = gKiriKiriPendingGlyphLines.find(tid);
+    if (found == gKiriKiriPendingGlyphLines.end())
+      return {};
+
+    auto &queue = found->second;
+    while (!queue.empty())
+    {
+      auto &state = queue.front();
+      if (state.consumed >= state.original.size())
+      {
+        queue.pop_front();
+        continue;
+      }
+
+      while (state.consumed < state.original.size() && isKiriKiriLayoutSeparator(state.original[state.consumed]))
+      {
+        auto separatorRun = std::wstring_view(state.original).substr(state.consumed);
+        if (separatorRun.size() >= glyph.size() && separatorRun.substr(0, glyph.size()) == glyph)
+          break;
+
+        state.consumed += 1;
+      }
+
+      if (state.consumed >= state.original.size())
+      {
+        queue.pop_front();
+        if (queue.empty())
+          gKiriKiriPendingGlyphLines.erase(tid);
+        return L"";
+      }
+
+      auto remaining = std::wstring_view(state.original).substr(state.consumed);
+      if (remaining.size() >= glyph.size() && remaining.substr(0, glyph.size()) == glyph)
+      {
+        auto startsNewRow = state.hasLastDrawX && drawX + 8 < state.lastDrawX;
+        state.lastDrawX = drawX;
+        state.hasLastDrawX = true;
+
+        std::wstring replacement;
+        if (state.emittedRows == 0)
+        {
+          replacement = state.translatedRows[0];
+          state.emittedRows = 1;
+        }
+        else if (startsNewRow && state.emittedRows < state.translatedRows.size())
+        {
+          replacement = state.translatedRows[state.emittedRows];
+          state.emittedRows += 1;
+        }
+        else
+        {
+          replacement = L"";
+        }
+
+        state.consumed += glyph.size();
+        if (state.consumed >= state.original.size())
+          queue.pop_front();
+        if (queue.empty())
+          gKiriKiriPendingGlyphLines.erase(tid);
+        return replacement;
+      }
+
+      queue.pop_front();
+    }
+
+    gKiriKiriPendingGlyphLines.erase(tid);
+    return {};
+  }
+
+  std::optional<std::wstring> findKiriKiriRenderTranslation(const std::wstring &original)
+  {
+    if (!isExperimentalKiriKiriTextboxEnabled())
+      return {};
+    std::scoped_lock lock(gKiriKiriRenderTranslationMutex);
+    auto found = gKiriKiriRenderTranslations.find(original);
+    if (found == gKiriKiriRenderTranslations.end())
+      return {};
+    return found->second;
+  }
+
+  std::optional<std::wstring> normalizeKrkr2wcsVisibleText(std::wstring text)
+  {
+    if (text.empty() || all_ascii(text))
+      return {};
+    if (text.find(L".ks") != text.npos || text.find(L".tjs") != text.npos || text.find(L".xp3") != text.npos || text.find(L"/") != text.npos || text.find(L"\\") != text.npos)
+      return {};
+    if (text[0] == L'@')
+    {
+      if (auto mc = re::search(text, LR"(@voice.*?name='(.*?)'.*?word='(.*?)')"))
+      {
+        auto name = mc.value()[1].str();
+        name = re::sub(name, L"（.*?）");
+        return name + L"「" + mc.value()[2].str() + L"」";
+      }
+      return {};
+    }
+    if (text.find(L"\u8aad\u307f\u8fbc\u307f") != text.npos)
+      return {};
+    if (text.size() > 4 && text.substr(text.size() - 4) == L"[np]")
+      text.resize(text.size() - 4);
+    if (text.size() > 3 && text.substr(text.size() - 3) == L"[r]")
+      text.resize(text.size() - 3);
+    text = re::sub(text, L"\\[\ruby text=\"(.*?)\"\\]");
+    text = re::sub(text, L"\\[ruby text=\"(.*?)\"\\]");
+    text = re::sub(text, L"\\[ch text=\"(.*?)\"\\]", L"$1");
+    if (text.empty())
+      return {};
+    return text;
+  }
+}
+
 namespace kirikiri
 {
 #pragma pack(push, 4)
@@ -29,6 +556,153 @@ namespace kirikiri
   {
   };
   typedef tTJSString ttstr;
+
+  ttstr *makeEmbeddedTtstr(const std::wstring &text)
+  {
+    auto variant = new tTJSVariantString;
+    ZeroMemory(variant, sizeof(tTJSVariantString));
+    variant->RefCount = 0x3fffffff;
+    variant->Length = (tjs_int)text.size();
+    variant->HeapFlag = 1;
+    variant->LongString = new tjs_char[text.size() + 1];
+    memcpy(variant->LongString, text.c_str(), (text.size() + 1) * sizeof(tjs_char));
+
+    auto wrapper = new ttstr;
+    wrapper->Ptr = variant;
+    return wrapper;
+  }
+
+  bool tryGetTtstrText(const ttstr *text, const wchar_t **source, size_t *length)
+  {
+    if (!text || !Engine::isAddressReadable(text) || !text->Ptr || !Engine::isAddressReadable(text->Ptr))
+      return false;
+    auto variant = text->Ptr;
+    if (variant->Length <= 0 || variant->Length > 0x1000)
+      return false;
+
+    auto chars = variant->LongString ? variant->LongString : variant->ShortString;
+    if (!chars || !Engine::isAddressReadable(chars, variant->Length + 1) || chars[variant->Length] != 0)
+      return false;
+
+    if (source)
+      *source = chars;
+    if (length)
+      *length = (size_t)variant->Length;
+    return true;
+  }
+
+  struct DrawTextTtstrArgRef
+  {
+    const wchar_t *label;
+    uintptr_t *location;
+  };
+
+  std::optional<DrawTextTtstrArgRef> findLongestDrawTextTtstrArg(hook_context *context, const wchar_t **source = nullptr, size_t *length = nullptr)
+  {
+    DrawTextTtstrArgRef candidates[] = {
+        {L"ecx", &context->ecx},
+        {L"edx", &context->edx},
+        {L"eax", &context->eax},
+        {L"ebx", &context->ebx},
+        {L"esi", &context->esi},
+        {L"edi", &context->edi},
+        {L"stack1", &context->stack[1]},
+        {L"stack2", &context->stack[2]},
+        {L"stack3", &context->stack[3]},
+        {L"stack4", &context->stack[4]},
+        {L"stack5", &context->stack[5]},
+        {L"stack6", &context->stack[6]},
+        {L"stack7", &context->stack[7]},
+        {L"stack8", &context->stack[8]},
+        {L"stack9", &context->stack[9]},
+        {L"stack10", &context->stack[10]},
+        {L"stack11", &context->stack[11]},
+        {L"stack12", &context->stack[12]},
+        {L"stack13", &context->stack[13]},
+        {L"stack14", &context->stack[14]},
+        {L"stack15", &context->stack[15]},
+        {L"stack16", &context->stack[16]},
+    };
+
+    std::optional<DrawTextTtstrArgRef> best;
+    const wchar_t *bestSource = nullptr;
+    size_t bestLength = 0;
+    for (auto &candidate : candidates)
+    {
+      const wchar_t *candidateSource = nullptr;
+      size_t candidateLength = 0;
+      if (!tryGetTtstrText((const ttstr *)*candidate.location, &candidateSource, &candidateLength))
+        continue;
+      if (!best || candidateLength > bestLength)
+      {
+        best = candidate;
+        bestSource = candidateSource;
+        bestLength = candidateLength;
+      }
+    }
+
+    if (!best)
+      return {};
+    if (source)
+      *source = bestSource;
+    if (length)
+      *length = bestLength;
+    return best;
+  }
+
+  std::optional<DrawTextTtstrArgRef> findShortestDrawTextTtstrArg(hook_context *context, const wchar_t **source = nullptr, size_t *length = nullptr)
+  {
+    DrawTextTtstrArgRef candidates[] = {
+        {L"ecx", &context->ecx},
+        {L"edx", &context->edx},
+        {L"eax", &context->eax},
+        {L"ebx", &context->ebx},
+        {L"esi", &context->esi},
+        {L"edi", &context->edi},
+        {L"stack1", &context->stack[1]},
+        {L"stack2", &context->stack[2]},
+        {L"stack3", &context->stack[3]},
+        {L"stack4", &context->stack[4]},
+        {L"stack5", &context->stack[5]},
+        {L"stack6", &context->stack[6]},
+        {L"stack7", &context->stack[7]},
+        {L"stack8", &context->stack[8]},
+        {L"stack9", &context->stack[9]},
+        {L"stack10", &context->stack[10]},
+        {L"stack11", &context->stack[11]},
+        {L"stack12", &context->stack[12]},
+        {L"stack13", &context->stack[13]},
+        {L"stack14", &context->stack[14]},
+        {L"stack15", &context->stack[15]},
+        {L"stack16", &context->stack[16]},
+    };
+
+    std::optional<DrawTextTtstrArgRef> best;
+    const wchar_t *bestSource = nullptr;
+    size_t bestLength = 0;
+    for (auto &candidate : candidates)
+    {
+      const wchar_t *candidateSource = nullptr;
+      size_t candidateLength = 0;
+      if (!tryGetTtstrText((const ttstr *)*candidate.location, &candidateSource, &candidateLength))
+        continue;
+      if (!best || candidateLength < bestLength)
+      {
+        best = candidate;
+        bestSource = candidateSource;
+        bestLength = candidateLength;
+      }
+    }
+
+    if (!best)
+      return {};
+    if (source)
+      *source = bestSource;
+    if (length)
+      *length = bestLength;
+    return best;
+  }
+
 #pragma pack(push, 4)
   struct tTVPPoint
   {
@@ -174,41 +848,83 @@ bool FindKiriKiriHook(DWORD fun, DWORD size, DWORD pt, DWORD flag) // jichi 10/2
                 for (auto addr : xrefs)
                 {
                   addr = findfuncstart(addr, 0x300); // DrawTextMultiple or 2，DrawTextSingle
-                  if (addr)
-                  {
-                    xrefs = findxref_reverse_checkcallop(addr, processStartAddress, processStopAddress, 0xe8);
-                    if (xrefs.size() == 1)
-                    {
-                      addr = xrefs[0];
-                      addr = findfuncstart(addr, 0x300); // DrawText
-                      if (addr)
-                      {
-                        /*
-                        void DrawText(const tTVPRect &destrect, tjs_int x, tjs_int y, const ttstr &text,
-                          tjs_uint32 color, tTVPBBBltMethod bltmode, tjs_int opa = 255,
-                            bool holdalpha = true, bool aa = true, tjs_int shlevel = 0,
-                            tjs_uint32 shadowcolor = 0,
-                            tjs_int shwidth = 0, tjs_int shofsx = 0, tjs_int shofsy = 0,
-                            tTVPComplexRect *updaterects = NULL)
-                            */
+                  if (!addr)
+                    continue;
+                  auto drawTextRefs = findxref_reverse_checkcallop(addr, processStartAddress, processStopAddress, 0xe8);
+                  if (drawTextRefs.size() != 1)
+                    continue;
 
-                        HookParam hp;
-                        hp.address = addr;
-                        hp.type = CODEC_UTF16 | USING_STRING | NO_CONTEXT;
-                        hp.text_fun = [](hook_context *context, HookParam *hp, TextBuffer *buffer, uintptr_t *split)
-                        {
-                          // fastcall, a4
-                          auto text = (kirikiri::ttstr *)context->stack[9];
-                          auto destrect = (kirikiri::tTVPRect *)context->eax;
-                          //*split=destrect->Bottom-destrect->Top;//split by font size;不知道为什么destrect里面的值是乱七八糟的
-                          *split = context->ecx; // y. 值似乎不是y，多行不会被分开。
-                          buffer->from(text->Ptr->LongString ? text->Ptr->LongString : text->Ptr->ShortString, text->Ptr->Length * 2);
-                        };
-                        NewHook(hp, "tTVPNativeBaseBitmap::DrawText");
-                        return true;
+                  addr = drawTextRefs[0];
+                  addr = findfuncstart(addr, 0x300); // DrawText
+                  if (!addr)
+                    continue;
+
+                  /*
+                  void DrawText(const tTVPRect &destrect, tjs_int x, tjs_int y, const ttstr &text,
+                    tjs_uint32 color, tTVPBBBltMethod bltmode, tjs_int opa = 255,
+                      bool holdalpha = true, bool aa = true, tjs_int shlevel = 0,
+                      tjs_uint32 shadowcolor = 0,
+                      tjs_int shwidth = 0, tjs_int shofsx = 0, tjs_int shofsy = 0,
+                      tTVPComplexRect *updaterects = NULL)
+                      */
+
+                  HookParam hp;
+                  hp.address = addr;
+                  hp.type = CODEC_UTF16 | USING_STRING | NO_CONTEXT | EMBED_ABLE;
+                  hp.text_fun = [](hook_context *context, HookParam *, TextBuffer *buffer, uintptr_t *split)
+                  {
+                    const wchar_t *source = nullptr;
+                    size_t sourceLength = 0;
+                    auto textArg = kirikiri::findLongestDrawTextTtstrArg(context, &source, &sourceLength);
+                    if (!textArg)
+                      return;
+
+                    *split = context->ecx; // y. 值似乎不是y，多行不会被分开。
+                    buffer->from(source, sourceLength * 2);
+
+                    auto sourceText = std::wstring(source, sourceLength);
+                    if (auto translated = findKiriKiriRenderTranslation(sourceText))
+                    {
+                      *textArg->location = (uintptr_t)kirikiri::makeEmbeddedTtstr(translated.value());
+                      return;
+                    }
+                    if (auto normalized = normalizeKrkr2wcsVisibleText(sourceText))
+                    {
+                      if (auto translated = findKiriKiriRenderTranslation(normalized.value()))
+                      {
+                        *textArg->location = (uintptr_t)kirikiri::makeEmbeddedTtstr(translated.value());
+                        return;
                       }
                     }
-                  }
+
+                    const wchar_t *glyphSource = nullptr;
+                    size_t glyphSourceLength = 0;
+                    auto glyphArg = kirikiri::findShortestDrawTextTtstrArg(context, &glyphSource, &glyphSourceLength);
+                    if (glyphArg && glyphSource && glyphSourceLength > 0 && glyphSourceLength <= 4)
+                    {
+                      auto glyphText = std::wstring(glyphSource, glyphSourceLength);
+                      if (auto replacement = consumeKiriKiriGlyphLine(glyphText, context->ecx))
+                      {
+                        *glyphArg->location = (uintptr_t)kirikiri::makeEmbeddedTtstr(replacement.value());
+                        return;
+                      }
+                    }
+                  };
+                  hp.embed_fun = [](hook_context *context, TextBuffer buffer, HookParam *)
+                  {
+                    if (!isExperimentalKiriKiriTextboxEnabled())
+                      return;
+                    auto translated = buffer.strW();
+                    if (translated.empty())
+                      return;
+                    auto textArg = kirikiri::findLongestDrawTextTtstrArg(context);
+                    if (!textArg)
+                      return;
+                    *textArg->location = (uintptr_t)kirikiri::makeEmbeddedTtstr(translated);
+                  };
+                  hp.embed_hook_font = kKiriKiriWideEmbedFontHooks;
+                  if (NewHook(hp, "tTVPNativeBaseBitmap::DrawText"))
+                    return true;
                 }
               return true;
             }
@@ -344,36 +1060,13 @@ void SpecialHookKAGParser(hook_context *context,  HookParam *, uintptr_t *data, 
     *data = eax;
     *len = ::wcslen((LPCWSTR)eax) * 2; // 2 == sizeof(wchar_t)
     *split = FIXED_SPLIT_VALUE; // merge all threads
-  }
-}
-
-void SpecialHookKAGParserEx(hook_context *context,  HookParam *, uintptr_t *data, uintptr_t *split, size_t*len)
-{
-  // 10013960   66:833c41 5b     cmp word ptr ds:[ecx+eax*2],0x5b
-  DWORD eax = regof(eax, esp_base),
-        ecx = regof(ecx, esp_base);
-  if (ecx && !eax) { // skip string when ecx is not zero
-    *data = ecx;
-    *len = ::wcslen((LPCWSTR)ecx) * 2; // 2 == sizeof(wchar_t)
-    *split = FIXED_SPLIT_VALUE; // merge all threads
-  }
-}
-} // unnamed namespace
-bool InsertKAGParserHook()
-{
-  ULONG processStartAddress, processStopAddress;
-  if (!NtInspect::getModuleMemoryRange(L"KAGParser.dll", &startAddress, &stopAddress)) {
-    return false;
-  }
-  const wchar_t *patternString = L"[r]";
-  const size_t patternStringSize = ::wcslen(patternString) * 2;
-  ULONG addr = MemDbg::findBytes(patternString, patternStringSize, processStartAddress, processStopAddress);
-  if (!addr) {
-    return false;
-  }
-  // Find where it is used as function parameter
+      auto normalized = normalizeKrkr2wcsVisibleText(buffer->strW());
+      if (!normalized)
   addr = MemDbg::findPushAddress(addr, processStartAddress, processStopAddress);
-  if (!addr) {
+      if (std::any_of(normalized->begin(), normalized->end(), [](wchar_t c)
+                      { return (c <= 127) && ((c != L'[') || c != L']'); }))
+        return buffer->clear();
+      buffer->from(normalized.value());
     return false;
   }
 
@@ -1570,7 +2263,7 @@ dl 16
           buffer->from(s);
         };
         hp.lineSeparator = L"\\n";
-        hp.embed_hook_font = F_GetTextExtentPoint32W | F_GetGlyphOutlineW;
+        hp.embed_hook_font = kKiriKiriWideEmbedFontHooks;
         succ |= NewHook(hp, "EmbedKrkrZ");
       }
     }
@@ -1581,6 +2274,31 @@ dl 16
 } // namespace ScenarioHook
 namespace
 {
+  size_t countZeroW(const wchar_t *s, size_t limit = 1500)
+  {
+    size_t count = 0;
+    for (auto p = s; count < limit; p++, count++)
+    {
+      if (!Engine::isAddressReadable(p) || !Engine::isAddressWritable(p))
+        return 0;
+      if (*p)
+        return count;
+    }
+    return 0;
+  }
+
+  std::wstring sanitizeKagInlineText(std::wstring text)
+  {
+    for (auto &ch : text)
+    {
+      if (ch == L'[')
+        ch = L'［';
+      else if (ch == L']')
+        ch = L'］';
+    }
+    return text;
+  }
+
   bool wcslen_wcscpy()
   {
     // LOVELY×CATION
@@ -1611,6 +2329,7 @@ namespace
     }
     if (!addr)
       return false;
+    gPreferKrkr2wcsHook = true;
     HookParam hp;
     hp.address = addr;
     if (off == 8)
@@ -1653,17 +2372,55 @@ namespace
     };
     hp.embed_fun = [](hook_context *s, TextBuffer buffer, HookParam *)
     {
-      auto t = std::wstring((wchar_t *)s->stack[off / 4]);
+      auto text = (wchar_t *)s->stack[off / 4];
+      if (!text || !*text)
+        return;
+      auto t = std::wstring(text);
       if (t[0] == L'@')
         return;
-      auto newText = buffer.strW();
+      auto content = buffer.strW();
+      if (content.empty())
+        return;
+      content = sanitizeKagInlineText(content);
+      std::wstring suffix;
+      std::wstring original = t;
       if (t.size() > 4 && t.substr(t.size() - 4) == L"[np]")
-        newText = newText + L"[np]";
-      if (t.size() > 3 && t.substr(t.size() - 3) == L"[r]")
-        newText = newText + L"[r]"; // 揺り籠より天使まで
-      wcscpy((wchar_t *)s->stack[off / 4], newText.c_str());
+      {
+        suffix = L"[np]";
+        original.resize(original.size() - 4);
+      }
+      else if (t.size() > 3 && t.substr(t.size() - 3) == L"[r]")
+      {
+        suffix = L"[r]"; // 揺り籠より天使まで
+        original.resize(original.size() - 3);
+      }
+      size_t writeCapacity = t.size();
+      size_t trailingCapacity = countZeroW(text + t.size());
+      if (trailingCapacity)
+        writeCapacity += trailingCapacity - 1;
+      size_t contentCapacity = writeCapacity > suffix.size() ? writeCapacity - suffix.size() : 0;
+      if (auto normalized = normalizeKrkr2wcsVisibleText(original))
+      {
+        rememberKiriKiriRenderTranslation(normalized.value(), content);
+        if (content.size() > contentCapacity)
+          queueKiriKiriGlyphLine(normalized.value(), content);
+      }
+      if (content.size() > contentCapacity)
+      {
+        if (isExperimentalKiriKiriTextboxEnabled())
+          return;
+        content.resize(contentCapacity);
+      }
+      auto newText = content + suffix;
+      size_t writableChars = writeCapacity + 1;
+      if (Engine::isAddressWritable(text, writableChars))
+      {
+        if (newText.size() < writableChars)
+          memset(text + newText.size(), 0, (writableChars - newText.size()) * sizeof(wchar_t));
+        memcpy(text, newText.c_str(), (newText.size() + 1) * sizeof(wchar_t));
+      }
     };
-    hp.embed_hook_font = F_GetTextExtentPoint32W | F_GetGlyphOutlineW;
+    hp.embed_hook_font = kKiriKiriWideEmbedFontHooks;
     return NewHook(hp, "Krkr2wcs");
   }
 }

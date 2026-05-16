@@ -102,7 +102,7 @@ C_LUNA_API void Luna_Settings(int flushDelay, bool filterRepetition, int default
     Host::defaultCodepage = defaultCodepage;
     Host::enablePCHooks = enablePCHooks;
 }
-C_LUNA_API void Luna_SettingsEx(DWORD pid, UINT32 waittime, UINT8 fontCharSet, bool fontCharSetEnabled, wchar_t *fontFamily, Displaymode displaymode, bool fastskipignore, bool clearText, bool changeFontSize, float FontSizeRelative, bool tryvehhook)
+C_LUNA_API void Luna_SettingsEx(DWORD pid, UINT32 waittime, UINT8 fontCharSet, bool fontCharSetEnabled, wchar_t *fontFamily, Displaymode displaymode, bool fastskipignore, bool clearText, bool changeFontSize, float FontSizeRelative, bool tryvehhook, bool experimentalKiriKiriTextbox)
 {
     auto sm = Host::GetCommonSharedMem(pid);
     if (!sm)
@@ -116,6 +116,7 @@ C_LUNA_API void Luna_SettingsEx(DWORD pid, UINT32 waittime, UINT8 fontCharSet, b
     sm->clearText = clearText;
     sm->FontSizeRelative = changeFontSize ? FontSizeRelative : 1.;
     sm->tryvehhook = tryvehhook;
+    sm->experimentalKiriKiriTextbox = experimentalKiriKiriTextbox;
 }
 C_LUNA_API void Luna_ResetLang()
 {

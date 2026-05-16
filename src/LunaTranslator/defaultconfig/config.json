@@ -279,6 +279,7 @@
         "limittextlength_use": false,
         "limittextlength_length": 40,
         "clearText": false,
+        "experimental_kirikiri_textbox": false,
         "changefontsize": 1.0,
         "changefontsize_use": false
     },

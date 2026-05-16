@@ -465,6 +465,7 @@ struct CommonSharedMem
 	bool fastskipignore;
 	bool clearText;
 	bool tryvehhook = false;
+	bool experimentalKiriKiriTextbox = false;
 	struct
 	{
 		bool use;

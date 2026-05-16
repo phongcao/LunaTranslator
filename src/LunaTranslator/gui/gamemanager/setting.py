@@ -1430,6 +1430,15 @@ class dialog_setting_game_internal(QWidget):
             ),
         )
         formLayout2.addRow(
+            "实验性KiriKiri文本框兼容",
+            getsimpleswitch(
+                savehook_new_data[gameuid]["embed_setting_private"],
+                "experimental_kirikiri_textbox",
+                default=globalconfig["embedded"]["experimental_kirikiri_textbox"],
+                callback=lambda _: gobject.base.textsource.set_settings_ex(),
+            ),
+        )
+        formLayout2.addRow(
             "内嵌安全性检查",
             getsimpleswitch(
                 savehook_new_data[gameuid]["embed_setting_private"],
