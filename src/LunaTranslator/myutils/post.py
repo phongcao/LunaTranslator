@@ -315,6 +315,10 @@ def fulltohalf(text: str, args: dict) -> str:
     return unicodedata.normalize(args.get("type", "NFKC"), text)
 
 
+def _replace_tilde_with_exclamation(line: str):
+    return line.replace("~", "!")
+
+
 processfunctions = {
     "_remove_symbo": _remove_symbo,
     "_2": _2_f,
@@ -341,6 +345,7 @@ processfunctions = {
     "_11": _mypostloader,
     "stringreplace": stringreplace,
     "fulltohalf": fulltohalf,
+    "_replace_tilde_with_exclamation": _replace_tilde_with_exclamation,
 }
 
 for k in postprocessconfig:

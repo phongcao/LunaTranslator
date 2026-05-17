@@ -145,5 +145,9 @@
         "use": false,
         "name": "自定义python处理",
         "isExUse": true
+    },
+    "_replace_tilde_with_exclamation": {
+        "use": false,
+        "name": "Replace ~ with !"
     }
 }

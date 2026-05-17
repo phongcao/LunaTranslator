@@ -1592,6 +1592,7 @@ class TranslatorWindow(resizableframeless):
 
     def clearRenderedText(self):
         self.translate_text.clear()
+        gobject.base.audioplayer.stop()
 
     def bindcropwindowcallback(self, pid, hwnd):
         _pid = os.getpid()
