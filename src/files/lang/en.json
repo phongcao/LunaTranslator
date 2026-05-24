@@ -926,6 +926,7 @@
     "仅HOOK模式下可用": "Only available in HOOK mode.",
     "仅OCR模式下可用": "Only available in OCR mode.",
     "重新启动后生效": "Effective after restart",
-    "清空工具栏文本": "",
+    "清空工具栏文本": "Clear Rendered Text",
+    "清空翻译显示": "Clear Rendered Text",
     "实验性KiriKiri文本框兼容": "Experimental KiriKiri textbox compatibility"
 }

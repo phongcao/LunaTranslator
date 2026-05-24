@@ -401,6 +401,7 @@ class TranslatorWindow(resizableframeless):
     clickRange_signal = pyqtSignal()
     showhide_signal = pyqtSignal()
     clear_signal_1 = pyqtSignal()
+    clear_rendered_text_signal = pyqtSignal()
     bindcropwindow_signal = pyqtSignal()
     fullsgame_signal = pyqtSignal(bool)
     quitf_signal = pyqtSignal()
@@ -1114,6 +1115,7 @@ class TranslatorWindow(resizableframeless):
             self.clearstate() or gobject.base.textsource.clearrange()
 
         self.clear_signal_1.connect(tryprint(__))
+        self.clear_rendered_text_signal.connect(self.clearRenderedText)
         self.bindcropwindow_signal.connect(
             functools.partial(mouseselectwindow, self.bindcropwindowcallback)
         )
@@ -1593,6 +1595,12 @@ class TranslatorWindow(resizableframeless):
     def clearRenderedText(self):
         self.translate_text.clear()
         gobject.base.audioplayer.stop()
+        textsource = getattr(gobject.base, "textsource", None)
+        if textsource and hasattr(textsource, "ranges"):
+            textsource.clear_region_translation()
+            textsource.showhiderangeui(False)
+            self.showhidestate = False
+            self.refreshtoolicon()
 
     def bindcropwindowcallback(self, pid, hwnd):
         _pid = os.getpid()
