@@ -44,21 +44,11 @@ _Use_decl_annotations_
 }
 struct FrameArrivedCallback : ComImpl<ITypedEventHandler<Direct3D11CaptureFramePool *, IInspectable *>>
 {
-    CComPtr<ID3D11Texture2D> &texture;
-    std::atomic_flag &waitforloadflag;
-    bool once = false;
-    FrameArrivedCallback(CComPtr<ID3D11Texture2D> &texture, std::atomic_flag &waitforloadflag) : waitforloadflag(waitforloadflag), texture(texture) {}
+    std::atomic_flag &hasframe;
+    FrameArrivedCallback(std::atomic_flag &hasframe) : hasframe(hasframe) {}
     HRESULT STDMETHODCALLTYPE Invoke(IDirect3D11CaptureFramePool *frame_pool, IInspectable *args)
     {
-        if (once)
-            return S_OK;
-        CComPtr<IDirect3D11CaptureFrame> frame;
-        CHECK_FAILURE(frame_pool->TryGetNextFrame(&frame));
-        CComPtr<IDirect3DSurface> surface;
-        CHECK_FAILURE(frame->get_Surface(&surface));
-        CHECK_FAILURE(GetTextureFromSurface(surface, &texture));
-        once = true;
-        waitforloadflag.clear();
+        hasframe.clear();
         return S_OK;
     }
 };
@@ -200,23 +190,58 @@ void capture_window(HWND window_handle, void (*cb)(byte *, size_t), bool blackbo
     if (SUCCEEDED(session.QueryInterface(&session3)))
         session3->put_IsBorderRequired(false);
     EventRegistrationToken token;
-    std::atomic_flag waitforloadflag = ATOMIC_FLAG_INIT;
-    waitforloadflag.test_and_set();
-    CComPtr<FrameArrivedCallback> arrivedCallback = new FrameArrivedCallback{texture, waitforloadflag};
+    std::atomic_flag hasframe = ATOMIC_FLAG_INIT;
+    hasframe.test_and_set();
+    CComPtr<FrameArrivedCallback> arrivedCallback = new FrameArrivedCallback{hasframe};
     CHECK_FAILURE_NORET(m_frame_pool->add_FrameArrived(arrivedCallback, &token));
 
     CHECK_FAILURE_NORET(session->StartCapture());
+
+    // Drain frames for 300ms to flush all stale DWM-cached content.
+    // We must call TryGetNextFrame to release pool buffers, otherwise
+    // WGC stops delivering new frames entirely.
     MSG message;
-    while (waitforloadflag.test_and_set())
+    ULONGLONG start = GetTickCount64();
+    while ((GetTickCount64() - start) < 300)
     {
         if (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE) > 0)
-        {
             DispatchMessage(&message);
+        if (!hasframe.test_and_set())
+        {
+            // A frame arrived — consume and discard it to free the pool slot
+            CComPtr<IDirect3D11CaptureFrame> discard;
+            m_frame_pool->TryGetNextFrame(&discard);
         }
+        Sleep(1);
     }
+
+    // Now wait for and grab the next fresh frame
+    hasframe.test_and_set();
+    ULONGLONG deadline = GetTickCount64() + 1000;
+    while (GetTickCount64() < deadline)
+    {
+        if (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE) > 0)
+            DispatchMessage(&message);
+        if (!hasframe.test_and_set())
+        {
+            CComPtr<IDirect3D11CaptureFrame> frame;
+            m_frame_pool->TryGetNextFrame(&frame);
+            if (frame)
+            {
+                CComPtr<IDirect3DSurface> surface;
+                if (SUCCEEDED(frame->get_Surface(&surface)))
+                    GetTextureFromSurface(surface, &texture);
+            }
+            break;
+        }
+        Sleep(1);
+    }
+
     CComPtr<IClosable> closer;
     session.QueryInterface(&closer);
     closer->Close();
+    if (!texture)
+        return;
     D3D11_TEXTURE2D_DESC captured_texture_desc;
     texture->GetDesc(&captured_texture_desc);
     captured_texture_desc.Usage = D3D11_USAGE_STAGING;

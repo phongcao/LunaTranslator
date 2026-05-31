@@ -109,9 +109,7 @@ class series_audioplayer:
                     time.sleep(0.1)
                 while _playonce.isplaying:
                     time.sleep(0.1)
-                    if self.tasks and not (
-                        globalconfig["ttsnointerrupt"] and (not self.tasks[-1])
-                    ):
+                    if self.tasks and self.tasks[-1]:
                         break
                 else:
                     if self.playovercallback:

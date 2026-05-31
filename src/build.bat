@@ -3,29 +3,39 @@ setlocal
 
 for %%I in ("%~dp0.") do set "SRC_DIR=%%~fI"
 set "NATIVE_DIR=%SRC_DIR%\NativeImpl\LunaHook"
+set "NATIVEIMPL_DIR=%SRC_DIR%\NativeImpl"
 set "RUNTIME_DIR=%SRC_DIR%\files\LunaHook"
 set "BUILD_OUTPUT_DIR=%NATIVE_DIR%\builds\Release_win10"
 set "PARALLEL=%NUMBER_OF_PROCESSORS%"
 if not defined PARALLEL set "PARALLEL=4"
 
-echo [1/6] Building LunaHook32.dll...
+echo [1/8] Building NativeUtils (x64)...
+call :build_target "%NATIVEIMPL_DIR%\build\x64_win10" ALL_BUILD || goto :error
+
+echo [2/8] Copying NativeUtils DLLs...
+robocopy "%NATIVEIMPL_DIR%\builds\_x64_win10" "%SRC_DIR%\files\DLL64" *.dll /NFL /NDL /NJH /NJS >nul
+if exist "%NATIVEIMPL_DIR%\builds\_x64_win10\LunaSubprocess64.exe" (
+    copy /y "%NATIVEIMPL_DIR%\builds\_x64_win10\LunaSubprocess64.exe" "%SRC_DIR%\files\LunaSubprocess64.exe" >nul
+)
+
+echo [3/8] Building LunaHook32.dll...
 call :build_target "%NATIVE_DIR%\build\x86_win10_2" LunaHook || goto :error
 
-echo [2/6] Building LunaHook64.dll...
+echo [4/8] Building LunaHook64.dll...
 call :build_target "%NATIVE_DIR%\build\x64_win10_2" LunaHook || goto :error
 
-echo [3/6] Building LunaHost64.dll...
+echo [5/8] Building LunaHost64.dll...
 call :build_target "%NATIVE_DIR%\build\x64_win10_1" LunaHostDll || goto :error
 
-echo [4/6] Copying runtime DLLs...
+echo [6/8] Copying runtime DLLs...
 call :copy_required "%BUILD_OUTPUT_DIR%\LunaHook32.dll" "%RUNTIME_DIR%\LunaHook32.dll" || goto :error
 call :copy_required "%BUILD_OUTPUT_DIR%\LunaHook64.dll" "%RUNTIME_DIR%\LunaHook64.dll" || goto :error
 call :copy_required "%BUILD_OUTPUT_DIR%\LunaHost64.dll" "%RUNTIME_DIR%\LunaHost64.dll" || goto :error
 
-echo [5/6] Copying optional runtime DLLs...
+echo [7/8] Copying optional runtime DLLs...
 call :copy_optional "%BUILD_OUTPUT_DIR%\LunaHost32.dll" "%RUNTIME_DIR%\LunaHost32.dll"
 
-echo [6/6] Done.
+echo [8/8] Done.
 echo Runtime DLLs updated in "%RUNTIME_DIR%".
 exit /b 0
 

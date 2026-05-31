@@ -5,15 +5,32 @@ from myutils.commonbase import ArgsEmptyExc
 from myutils.hwnd import safepixmap
 from myutils.utils import stringfyerror
 from traceback import print_exc
-import threading, gobject, NativeUtils
+import threading, gobject, NativeUtils, windows
 from ocrengines.baseocrclass import baseocr, OCRResultParsed
 
 
 def imageCut(hwnd, x1, y1, x2, y2) -> QImage:
+    if hwnd:
+        # Use WGC (Windows Graphics Capture) for bound windows.
+        # GDI returns stale content for DirectX/UE games.
+        wgc_data = NativeUtils.WinRT.capture_window(hwnd)
+        if wgc_data:
+            rect = windows.GetWindowRect(hwnd)
+            if rect:
+                wl, wt, wr, wb = rect
+                rx1 = max(x1 - wl, 0)
+                ry1 = max(y1 - wt, 0)
+                rx2 = x2 - wl
+                ry2 = y2 - wt
+                full_img = safepixmap(wgc_data).toImage()
+                if not full_img.isNull():
+                    cropped = full_img.copy(rx1, ry1, rx2 - rx1, ry2 - ry1)
+                    return True, cropped
+        return False, QImage()
+
+    # No hwnd — use GDI screen capture
     succ, pix = NativeUtils.GdiCropImage(x1, y1, x2, y2, hwnd)
     pix = safepixmap(pix).toImage()
-    if hwnd:
-        return succ, pix
     return pix
 
 

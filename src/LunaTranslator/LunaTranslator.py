@@ -258,7 +258,10 @@ class BASEOBJECT(QObject):
             return False
         if reader.typename != "vieneutts":
             return True
-        return self.current_text_source_kind == "hook"
+        if self.current_text_source_kind == "hook":
+            return True
+        # Allow VieNeuTTS to read translated text in OCR mode
+        return not self.latest_is_origin
 
     def __wheelhistory(self, offset: int):
         if not globalconfig.get("enable_wheel_history", True):
@@ -307,6 +310,7 @@ class BASEOBJECT(QObject):
         self.currenttranslate_1 = ""
         self.latest_is_origin = True
         self.current_text_source_kind = "other"
+        self._last_tts_text = None
         self.ocr_region_text_state: "dict[str, str]" = {}
         self.refresh_on_get_trans_signature = 0
         self.currentsignature = None
@@ -1560,7 +1564,11 @@ class BASEOBJECT(QObject):
         if not self._reader_accepts_current_text(reader):
             return
         text2 = self.ttsrepair(text1, self.__usewhich())
-        self.audioplayer.timestamp = uuid.uuid4()
+        if text2 == self._last_tts_text and not force:
+            return
+        self._last_tts_text = text2
+        if force:
+            self.audioplayer.timestamp = uuid.uuid4()
         reader.read(text2, force, self.audioplayer.timestamp)
 
     @tryprint
