@@ -1314,7 +1314,8 @@
                 "model_type": "standard",
                 "voice_repo": "pnnbao-ump/VieNeu-TTS-v2",
                 "codec_repo": "neuphonic/neucodec-onnx-decoder-int8",
-                "use_chat_format": "false"
+                "use_chat_format": "false",
+                "similarity_threshold": 0.85
             },
             "argstype": {
                 "lm_studio_url": {
@@ -1344,6 +1345,13 @@
                     "name": "Chat Format (standard only)",
                     "list": ["No", "Yes"],
                     "internal": ["false", "true"]
+                },
+                "similarity_threshold": {
+                    "type": "spin",
+                    "name": "Similarity Threshold (0-1)",
+                    "min": 0,
+                    "max": 1,
+                    "step": 0.05
                 }
             }
         }

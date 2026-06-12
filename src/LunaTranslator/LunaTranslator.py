@@ -1427,18 +1427,18 @@ class BASEOBJECT(QObject):
                 self.currenttranslate_1 = res
                 safe_callback(res)
                 self.latest_is_origin = False
-                if not waitforresultcallback:
-                    if (
-                        globalconfig["read_trans"]
-                        and (not read_trans_once_check)
-                        and (
-                            (globalconfig["toppest_translator"] == classname)
-                            or ((not globalconfig["toppest_translator"]))
-                        )
-                    ):
-                        self.readcurrent()
-                        read_trans_once_check.append(classname)
+                if (
+                    globalconfig["read_trans"]
+                    and (not read_trans_once_check)
+                    and (
+                        (globalconfig["toppest_translator"] == classname)
+                        or ((not globalconfig["toppest_translator"]))
+                    )
+                ):
+                    self.readcurrent()
+                    read_trans_once_check.append(classname)
 
+                if not waitforresultcallback:
                     self.dispatchoutputer(res, False)
 
     def __usewhich(self):

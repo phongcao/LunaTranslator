@@ -145,27 +145,40 @@ void CropBMPBlackBordersInPlace(unsigned char *data, size_t &dataSize)
 }
 void capture_window(HWND window_handle, void (*cb)(byte *, size_t), bool blackborderremove)
 {
-    // Init COM
-    // init_apartment(winrt::apartment_type::multi_threaded);
+    // Reuse D3D11 device across calls to avoid GPU resource churn
+    // that causes DXGI_ERROR_DEVICE_REMOVED in games.
+    static CComPtr<ID3D11Device> s_d3d_device;
+    static CComPtr<IDirect3DDevice> s_device;
 
-    // Create Direct 3D Device
-    CComPtr<ID3D11Device> d3d_device;
-
-    CHECK_FAILURE_NORET(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                          nullptr, 0, D3D11_SDK_VERSION, &d3d_device, nullptr, nullptr));
-
-    CComPtr<IDirect3DDevice> device;
-    CComPtr<IDXGIDevice> dxgiDevice;
-    CHECK_FAILURE_NORET(d3d_device.QueryInterface(&dxgiDevice));
-
+    if (!s_d3d_device)
     {
+        CHECK_FAILURE_NORET(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                              nullptr, 0, D3D11_SDK_VERSION, &s_d3d_device, nullptr, nullptr));
+        CComPtr<IDXGIDevice> dxgiDevice;
+        CHECK_FAILURE_NORET(s_d3d_device.QueryInterface(&dxgiDevice));
         CComPtr<IInspectable> inspectable;
         CHECK_FAILURE_NORET(CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice, &inspectable));
-        CHECK_FAILURE_NORET(inspectable.QueryInterface(&device));
+        CHECK_FAILURE_NORET(inspectable.QueryInterface(&s_device));
+    }
+
+    // Check if our cached device is still valid
+    HRESULT deviceHr = s_d3d_device->GetDeviceRemovedReason();
+    if (FAILED(deviceHr))
+    {
+        // Our device was lost too — recreate it
+        s_d3d_device.Release();
+        s_device.Release();
+        CHECK_FAILURE_NORET(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                              nullptr, 0, D3D11_SDK_VERSION, &s_d3d_device, nullptr, nullptr));
+        CComPtr<IDXGIDevice> dxgiDevice;
+        CHECK_FAILURE_NORET(s_d3d_device.QueryInterface(&dxgiDevice));
+        CComPtr<IInspectable> inspectable;
+        CHECK_FAILURE_NORET(CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice, &inspectable));
+        CHECK_FAILURE_NORET(inspectable.QueryInterface(&s_device));
     }
 
     CComPtr<ID3D11DeviceContext> d3d_context;
-    d3d_device->GetImmediateContext(&d3d_context);
+    s_d3d_device->GetImmediateContext(&d3d_context);
 
     RECT rect{};
     CHECK_FAILURE_NORET(DwmGetWindowAttribute(window_handle, DWMWA_EXTENDED_FRAME_BOUNDS, &rect, sizeof(RECT)));
@@ -174,7 +187,7 @@ void capture_window(HWND window_handle, void (*cb)(byte *, size_t), bool blackbo
     CComPtr<IDirect3D11CaptureFramePoolStatics> framepoolstatics;
     CHECK_FAILURE_NORET(GetActivationFactory(AutoHString(RuntimeClass_Windows_Graphics_Capture_Direct3D11CaptureFramePool), &framepoolstatics));
     CComPtr<IDirect3D11CaptureFramePool> m_frame_pool;
-    CHECK_FAILURE_NORET(framepoolstatics->Create(device, DirectXPixelFormat::DirectXPixelFormat_B8G8R8A8UIntNormalized, 2, size, &m_frame_pool));
+    CHECK_FAILURE_NORET(framepoolstatics->Create(s_device, DirectXPixelFormat::DirectXPixelFormat_B8G8R8A8UIntNormalized, 2, size, &m_frame_pool));
     CComPtr<IGraphicsCaptureItemInterop> interop_factory;
     CHECK_FAILURE_NORET(GetActivationFactory(AutoHString(RuntimeClass_Windows_Graphics_Capture_GraphicsCaptureItem), &interop_factory));
     CComPtr<IGraphicsCaptureItem> capture_item = {nullptr};
@@ -197,18 +210,17 @@ void capture_window(HWND window_handle, void (*cb)(byte *, size_t), bool blackbo
 
     CHECK_FAILURE_NORET(session->StartCapture());
 
-    // Drain frames for 300ms to flush all stale DWM-cached content.
+    // Drain frames for 100ms to flush stale DWM-cached content.
     // We must call TryGetNextFrame to release pool buffers, otherwise
     // WGC stops delivering new frames entirely.
     MSG message;
     ULONGLONG start = GetTickCount64();
-    while ((GetTickCount64() - start) < 300)
+    while ((GetTickCount64() - start) < 100)
     {
         if (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE) > 0)
             DispatchMessage(&message);
         if (!hasframe.test_and_set())
         {
-            // A frame arrived — consume and discard it to free the pool slot
             CComPtr<IDirect3D11CaptureFrame> discard;
             m_frame_pool->TryGetNextFrame(&discard);
         }
@@ -249,7 +261,7 @@ void capture_window(HWND window_handle, void (*cb)(byte *, size_t), bool blackbo
     captured_texture_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     captured_texture_desc.MiscFlags = 0;
     CComPtr<ID3D11Texture2D> user_texture = nullptr;
-    CHECK_FAILURE_NORET(d3d_device->CreateTexture2D(&captured_texture_desc, nullptr, &user_texture));
+    CHECK_FAILURE_NORET(s_d3d_device->CreateTexture2D(&captured_texture_desc, nullptr, &user_texture));
 
     d3d_context->CopyResource(user_texture, texture);
     D3D11_MAPPED_SUBRESOURCE resource;

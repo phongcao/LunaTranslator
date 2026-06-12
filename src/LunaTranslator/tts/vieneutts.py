@@ -4,9 +4,12 @@ import json
 import os
 import re
 import wave
+from difflib import SequenceMatcher
 
 _RE_SPEECH_TOKEN = re.compile(r"<\|speech_(\d+)\|>")
 _RE_NAME_PREFIX = re.compile(r"^[^:：]{1,20}[：:]\s*")
+# Match a standalone name line: short, no sentence punctuation
+_RE_NAME_LINE = re.compile(r"^[^\n,.!?;:。、！？；：…「」『』()\(\)]{1,20}\n")
 
 # Local cache for downloaded HuggingFace files
 _CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "vieneutts")
@@ -144,11 +147,27 @@ class TTS(TTSbase):
     _OVERLAP_FRAMES = 1         # overlap frames for crossfade
     _STRIDE_SAMPLES = _CHUNK_TOKENS * _HOP_LENGTH  # 12000
 
+    _last_spoken_text = ""
+
     def speak(self, content, voice, param: SpeechParam):
-        # Strip character name prefix (e.g. "Person A: ...")
+        # Strip character name prefix (e.g. "Person A: ..." or "Name\nDialog")
         content = _RE_NAME_PREFIX.sub("", content)
+        if "\n" in content:
+            m = _RE_NAME_LINE.match(content)
+            if m and len(m.group(0)) < len(content) / 3:
+                content = content[m.end():]
         if not content.strip():
             return b""
+
+        # Fuzzy match: skip if too similar to last spoken text
+        similarity_threshold = self.config.get("similarity_threshold", 0.85)
+        if self._last_spoken_text and content.strip() != self._last_spoken_text:
+            ratio = SequenceMatcher(
+                None, self._last_spoken_text, content.strip()
+            ).ratio()
+            if ratio >= similarity_threshold:
+                return b""
+        self._last_spoken_text = content.strip()
 
         np = self._np
         model_type = self.config.get("model_type", "standard").lower()
