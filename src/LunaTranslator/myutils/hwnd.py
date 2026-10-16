@@ -1,7 +1,7 @@
 import windows
 from qtsymbols import *
 import gobject
-import os, functools
+import os, sys, functools
 import time, NativeUtils, hashlib
 from urllib.parse import quote
 from myutils.config import savehook_new_data, globalconfig, relpath, _TR
@@ -159,6 +159,13 @@ def ListProcess(exe=None):
 
 
 def getExeIcon(name: str, icon=True, cache=False, large=False):
+    if name == getcurrexe():
+        # 源码运行时进程是 python(w).exe，改用 dev-install.ps1 在 venv 中生成的图标
+        devicon = os.path.join(sys.prefix, "LunaTranslator.ico")
+        if os.path.basename(name).lower() in ("python.exe", "pythonw.exe") and (
+            os.path.exists(devicon)
+        ):
+            name = devicon
     if name.lower().endswith(".lnk"):
         exepath, args, iconpath, dirp = NativeUtils.GetLnkTargetPath(name)
         if os.path.exists(iconpath):
