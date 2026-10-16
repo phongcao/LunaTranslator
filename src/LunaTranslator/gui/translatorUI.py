@@ -34,7 +34,7 @@ from gui.qevent import TransparentChangedEvent
 from gui.dialog_memory import dialog_memory
 from gui.rendertext.texttype import TextType, SpecialColor
 from gui.textbrowser import Textbrowser
-from gui.rangeselect import rangeselct_function
+from gui.rangeselect import rangeselct_function, raise_all_rangeadjusts
 from gui.usefulwidget import (
     resizableframeless,
     create_centered_rect,
@@ -750,6 +750,9 @@ class TranslatorWindow(resizableframeless):
         # Raising the owner also raises its OCR selections over an open menu.
         if ocr_popup_is_visible():
             return
+        # OCR selections have no owner, so re-raise them (and their in-place
+        # translation overlays) too, before this window so it stays on top.
+        raise_all_rangeadjusts()
         windows.SetWindowPos(
             self.winid,
             windows.HWND_TOPMOST,

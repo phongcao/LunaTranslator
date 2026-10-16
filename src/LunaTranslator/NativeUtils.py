@@ -18,6 +18,7 @@ from ctypes import (
     c_uint64,
     c_int32,
     CFUNCTYPE,
+    windll,
 )
 from ctypes.wintypes import (
     WORD,
@@ -32,7 +33,7 @@ from ctypes.wintypes import (
     LPCWSTR,
     MAX_PATH,
 )
-from myutils.config import _TR
+from myutils.config import _TR, globalconfig
 from windows import AutoHandle
 from xml.sax.saxutils import escape
 import gobject, os, json, subprocess
@@ -461,7 +462,14 @@ _ExcludeFromCapture.restype = c_bool
 
 def ExcludeFromCapture(hwnd):
     """WDA_EXCLUDEFROMCAPTURE（Win10 2004+）：窗口对用户照常可见，但
-    不出现在截图里。旧系统上返回 False 不设置。"""
+    不出现在截图里。旧系统上返回 False 不设置。
+
+    部分系统（如某些 Insider 版本）上带此属性的窗口根本不会显示，
+    可在 OCR 设置里关闭：关闭时清除属性（WDA_NONE）并返回 False，
+    调用方按“未排除”处理（截图前隐藏覆盖层等）。"""
+    if not globalconfig.get("ocr_exclude_from_capture", True):
+        windll.user32.SetWindowDisplayAffinity(HWND(int(hwnd)), 0)
+        return False
     return bool(_ExcludeFromCapture(int(hwnd)))
 
 

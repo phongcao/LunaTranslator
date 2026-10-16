@@ -101,6 +101,51 @@ def _same_ocr_source(a, b):
     )
 
 
+class _OCRBlockReadBatch:
+    """原地显示（按块翻译）时的朗读：同一次识别的各块分别翻译，逐块
+    朗读会互相打断、且只剩最后到达的一块。这里收齐本批所有已派发块
+    的译文后，按块顺序合并朗读一次。
+
+    每块取首个返回的引擎结果（设置了首选翻译时只取首选）；失败的块
+    记为空，不阻塞整批。seal 前到达的结果（缓存/预翻译同步回调）先
+    暂存，seal 时再判断是否收齐。"""
+
+    def __init__(self, sources, read):
+        self.sources = sources
+        self.read = read
+        self.lock = threading.Lock()
+        self.expected = None
+        self.texts = {}
+        self.done = False
+
+    def seal(self, expected):
+        with self.lock:
+            self.expected = set(expected)
+        self._maybe_read()
+
+    def add(self, index, engine, text):
+        preferred = globalconfig.get("toppest_translator")
+        with self.lock:
+            if self.done or index in self.texts:
+                return
+            if preferred and engine != preferred:
+                return
+            self.texts[index] = text
+        self._maybe_read()
+
+    def _maybe_read(self):
+        with self.lock:
+            if self.done or self.expected is None:
+                return
+            if not self.expected.issubset(self.texts):
+                return
+            self.done = True
+            texts = [self.texts[i] for i in sorted(self.expected) if self.texts[i]]
+        # 已被新的识别结果取代时不再朗读
+        if texts and any(overlay_source_is_current(_) for _ in self.sources):
+            self.read("\n".join(texts))
+
+
 class HistoryHelper:
     # 仅记录主界面中显示的内容，不要显示具有回调的内容。
     class singlehistory:
@@ -594,7 +639,19 @@ class BASEOBJECT(QObject):
         with self.solvegottextlock:
             sources = getattr(text, "ocr_region_sources", None)
             requests = sources if sources and waitforresultcallback is None else (text,)
-            for region_text in requests:
+            batch = None
+            if sources and waitforresultcallback is None:
+                # 按块翻译：合并朗读（见 _OCRBlockReadBatch），各块不单独朗读
+                batch = _OCRBlockReadBatch(
+                    sources,
+                    lambda t: globalconfig.get("read_trans", False)
+                    and self.readcurrent(text=t, isorigin=False),
+                )
+                for i, source in enumerate(sources):
+                    source.ocr_read_batch = batch
+                    source.ocr_read_index = i
+            dispatched = []
+            for i, region_text in enumerate(requests):
                 if getattr(region_text, "ocr_direct_translation", False):
                     self.displayinfomessage(region_text, "<notrans>")
                     continue
@@ -613,6 +670,14 @@ class BASEOBJECT(QObject):
                 )
                 if waitforresultcallback and not succ:
                     waitforresultcallback(TranslateResult())
+                if batch is not None and succ:
+                    dispatched.append(i)
+            if batch is not None:
+                if globalconfig.get("read_raw", True):
+                    raw = "\n".join(_ for _ in sources if _.strip())
+                    if raw:
+                        self.readcurrent(text=raw, isorigin=True)
+                batch.seal(dispatched)
 
     def __erroroutput(self, klass, erroroutput, _showrawfunction, e, t):
 
@@ -709,7 +774,9 @@ class BASEOBJECT(QObject):
                 self.currenttranslate = ""
                 self.currenttranslate_1 = ""
                 self.latest_is_origin = True
-                if globalconfig.get("read_raw", True):
+                if globalconfig.get("read_raw", True) and not getattr(
+                    origin, "ocr_read_batch", None
+                ):
                     self.readcurrent()
                 self.dispatchoutputer(text, True)
 
@@ -974,8 +1041,12 @@ class BASEOBJECT(QObject):
                         classname, erroroutput, _showrawfunction,
                         res, TextType.Error_translator,
                     )
+                    self._overlay_batch_result(ocr_overlay_source, classname, None)
                     return
                 res = self.solveaftertrans(res, optimization_params)
+                self._overlay_batch_result(
+                    ocr_overlay_source, classname, res, iter_res_status
+                )
                 if res:
                     route_overlay_translation(ocr_overlay_source, classname, res)
                     if iter_res_status in (0, 2) and statusok:
@@ -997,9 +1068,13 @@ class BASEOBJECT(QObject):
                     __erroroutput(res, TextType.Error_translator)
                 if len(usefultranslators) == 0:
                     safe_callback()
+                self._overlay_batch_result(ocr_overlay_source, classname, None)
                 return
 
             res = self.solveaftertrans(res, optimization_params)
+            self._overlay_batch_result(
+                ocr_overlay_source, classname, res, iter_res_status
+            )
             if not res:
                 if len(usefultranslators) == 0:
                     safe_callback()
@@ -1051,6 +1126,8 @@ class BASEOBJECT(QObject):
                 if not waitforresultcallback:
                     if (
                         globalconfig.get("read_trans", False)
+                        # 按块翻译的原地显示由 _OCRBlockReadBatch 合并朗读
+                        and not getattr(ocr_overlay_source, "ocr_read_batch", None)
                         and (not read_trans_once_check)
                         and (
                             (globalconfig.get("toppest_translator") == classname)
@@ -1061,6 +1138,14 @@ class BASEOBJECT(QObject):
                         read_trans_once_check.append(classname)
 
                     self.dispatchoutputer(res, False)
+
+    @staticmethod
+    def _overlay_batch_result(source, engine, res, iter_res_status=0):
+        """按块翻译的一块有了最终结果（失败时 res 为 None）：交给本批
+        合并朗读。流式翻译的中间结果（iter_res_status == 1）不计。"""
+        batch = getattr(source, "ocr_read_batch", None)
+        if batch is not None and iter_res_status in (0, 2):
+            batch.add(source.ocr_read_index, engine, res)
 
     def __usewhich(self):
 
@@ -1149,13 +1234,16 @@ class BASEOBJECT(QObject):
         return None
 
     @threader
-    def readcurrent(self, force=False):
+    def readcurrent(self, force=False, text=None, isorigin=None):
         if (not force) and (not globalconfig.get("autoread", False)):
             return
-        text1 = self.currentread
+        # text/isorigin：朗读指定文本（原地显示按块翻译的合并朗读）
+        text1 = self.currentread if text is None else text
         if not text1:
             return
-        matchitme = self.ttsskip(text1, self.__usewhich(), self.latest_is_origin)
+        if isorigin is None:
+            isorigin = self.latest_is_origin
+        matchitme = self.ttsskip(text1, self.__usewhich(), isorigin)
         reader = None
         if matchitme is None:
             reader = self.reader

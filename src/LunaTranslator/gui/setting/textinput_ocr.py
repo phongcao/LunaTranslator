@@ -30,7 +30,11 @@ from gui.usefulwidget import (
     makescroll,
 )
 from gui.fluent.expander import ExExpander
-from gui.rangeselect import add_overlay_style_rows, set_global_mousetransp
+from gui.rangeselect import (
+    add_overlay_style_rows,
+    set_global_mousetransp,
+    apply_capture_exclusion,
+)
 from gui.specialwidget import KeyPressDetector
 from traceback import print_exc
 import gobject, qtawesome, importlib
@@ -521,6 +525,18 @@ def _otherspage(self, l):
     add_overlay_style_rows(inplace)
     vlay.addWidget(inplace)
     vlay.addWidget(makecardrow("鼠标穿透范围框", _mousetransp_switch))
+    # 截图排除 OCR 窗口：部分系统上带该属性的窗口不显示，可关闭
+    vlay.addWidget(
+        makecardrow(
+            "截图时排除OCR窗口",
+            D_getsimpleswitch(
+                globalconfig,
+                "ocr_exclude_from_capture",
+                default=True,
+                callback=lambda _: apply_capture_exclusion(),
+            ),
+        )
+    )
     vlay.addWidget(
         makecardrow(
             "多重区域模式",

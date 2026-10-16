@@ -971,5 +971,6 @@
     "左上": "Top Left",
     "右上": "Top Right",
     "中上": "Top Center",
-    "鼠标穿透范围框": "Range Box Click-through"
+    "鼠标穿透范围框": "Range Box Click-through",
+    "截图时排除OCR窗口": "Exclude OCR Windows from Capture"
 }

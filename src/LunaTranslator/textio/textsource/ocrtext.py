@@ -10,7 +10,7 @@ from gui.ocrtranslationoverlay import (
     overlay_source_is_current,
 )
 from myutils.wrapper import threader
-from myutils.ocrutil import imageCut, ocr_run, ocr_init
+from myutils.ocrutil import imageCut, windowCaptureCut, ocr_run, ocr_init
 import gobject
 
 from qtsymbols import *
@@ -52,16 +52,32 @@ def _hwnd_imageCut(hwnd, rectX: QRect, curr=-1):
     return succ, img
 
 
-def imageCutEx(hwnd, rectX: QRect):
+def _bound_window_in_front(hwnd):
+    """绑定窗口（或本程序）是否在前台：此时选区处的桌面画面就是游戏。"""
+    pid = windows.GetWindowThreadProcessId(windows.GetForegroundWindow())
+    return pid in (windows.GetWindowThreadProcessId(hwnd), os.getpid())
+
+
+def imageCutEx(hwnd, rectX: QRect, bound=False):
+    """bound：hwnd 是用户绑定的游戏窗口（而非临时找到的选区下窗口）。"""
     if hwnd:
-        # 绑定游戏窗口时先只试 HWND 截图（不隐藏任何窗口）：GetDC(hwnd)
-        # +BitBlt 只截游戏自身内容，覆盖层与本程序窗口都不在画面里——
-        # 成功时无需隐藏覆盖层、也无需因窗口遮挡而暂停（与系统版本无关，
-        # 菜单展开同理）。失败（如 DirectX 全屏黑屏）时才走下方守卫路径：
-        # 截图前隐藏覆盖层，然后 仅落桌面。
+        # 先只截该窗口自身内容（不隐藏任何窗口），覆盖层与其他窗口都
+        # 不在画面里，无需因窗口遮挡而暂停：
+        # 1. 绑定窗口先试 WGC：DirectX/UE 等游戏的 GDI 截图是黑屏或旧
+        #    画面，WGC 可取到当前画面（像素即物理像素，无需按 DPI 缩放）
+        # 2. GetDC(hwnd)+BitBlt
+        if bound:
+            img = windowCaptureCut(hwnd, rectX)
+            if not img.isNull():
+                return _ocrpreprocess(img)
         succ, img = _hwnd_imageCut(hwnd, rectX, curr=0)
         if succ and not img.isNull():
             return _ocrpreprocess(img)
+        # 都失败时才走下方守卫路径（截图前隐藏覆盖层，然后 仅落桌面）。
+        # 桌面截图拍到的是选区处最上层的窗口——绑定的游戏不在前台时那
+        # 是别的窗口，宁可跳过本轮也不能识别它
+        if bound and not _bound_window_in_front(hwnd):
+            return QImage()
     img = capture_without_overlays(
         lambda: _hwnd_imageCut(hwnd, rectX, curr=1), rectX)
     if img is None:
@@ -174,7 +190,7 @@ class rangemanger:
                 hwnd = NativeUtils.find_sole_opaque_window(
                     *rect.getCoords(), os.getpid()
                 )
-            img = imageCutEx(hwnd, rect)
+            img = imageCutEx(hwnd, rect, bound=bool(self.ref.hwnd))
             if img.isNull():
                 return None, None
         else:
@@ -430,8 +446,16 @@ class ocrtext(basetext):
                 r.lastocrtime = 0
                 r.savelasttext = None
                 r.savelastrecimg = None
+        changed = enabled != self._overlay_enabled
         self._overlay_enabled = enabled
         [_.range_ui.setstyle() for _ in self.ranges]
+        if changed and self.ranges:
+            # 切换原地显示时按当前 显示/隐藏范围框 状态重新应用：隐藏
+            # 在原地显示下只藏边框、在普通模式下整框隐藏
+            try:
+                self.showhiderangeui(gobject.base.translation_ui.showhidestate)
+            except:
+                print_exc()
 
     def showhiderangeui(self, b):
         if b and len(self.ranges) == 0:
@@ -445,7 +469,9 @@ class ocrtext(basetext):
         # 原地译文保持可见；其余模式仍整框隐藏
         hideborder = (not b) and globalconfig.get("ocr_translation_overlay", False)
         for _ in self.ranges:
-            if b:
+            # 原地显示时“隐藏”的框也必须可见（覆盖层只在框可见时绘制）：
+            # 关闭原地显示时整框隐藏过的框，开启后要重新显示
+            if b or hideborder:
                 _r = _.range_ui.getrect()
                 if _r:
                     _.range_ui.setrect(_r)

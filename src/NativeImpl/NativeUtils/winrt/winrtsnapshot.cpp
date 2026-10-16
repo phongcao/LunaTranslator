@@ -44,21 +44,11 @@ _Use_decl_annotations_
 }
 struct FrameArrivedCallback : ComImpl<ITypedEventHandler<Direct3D11CaptureFramePool *, IInspectable *>>
 {
-    CComPtr<ID3D11Texture2D> &texture;
-    std::atomic_flag &waitforloadflag;
-    bool once = false;
-    FrameArrivedCallback(CComPtr<ID3D11Texture2D> &texture, std::atomic_flag &waitforloadflag) : waitforloadflag(waitforloadflag), texture(texture) {}
+    std::atomic_flag &hasframe;
+    FrameArrivedCallback(std::atomic_flag &hasframe) : hasframe(hasframe) {}
     HRESULT STDMETHODCALLTYPE Invoke(IDirect3D11CaptureFramePool *frame_pool, IInspectable *args)
     {
-        if (once)
-            return S_OK;
-        CComPtr<IDirect3D11CaptureFrame> frame;
-        CHECK_FAILURE(frame_pool->TryGetNextFrame(&frame));
-        CComPtr<IDirect3DSurface> surface;
-        CHECK_FAILURE(frame->get_Surface(&surface));
-        CHECK_FAILURE(GetTextureFromSurface(surface, &texture));
-        once = true;
-        waitforloadflag.clear();
+        hasframe.clear();
         return S_OK;
     }
 };
@@ -155,24 +145,36 @@ void CropBMPBlackBordersInPlace(unsigned char *data, size_t &dataSize)
 }
 void capture_window(HWND window_handle, void (*cb)(byte *, size_t), bool blackborderremove)
 {
-    // Init COM
-    // init_apartment(winrt::apartment_type::multi_threaded);
+    // Reuse the D3D11 device across calls: creating one per capture (OCR polls
+    // the bound window continuously) churns GPU resources and can make games
+    // hit DXGI_ERROR_DEVICE_REMOVED. The immediate context is not thread-safe,
+    // so captures from the OCR thread and the UI are serialized.
+    static std::mutex s_lock;
+    static CComPtr<ID3D11Device> s_d3d_device;
+    static CComPtr<IDirect3DDevice> s_device;
+    std::lock_guard _(s_lock);
 
-    // Create Direct 3D Device
-    CComPtr<ID3D11Device> d3d_device;
-
-    CHECK_FAILURE_NORET(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                          nullptr, 0, D3D11_SDK_VERSION, &d3d_device, nullptr, nullptr));
-
-    CComPtr<IDirect3DDevice> device;
-    CComPtr<IDXGIDevice> dxgiDevice;
-    CHECK_FAILURE_NORET(d3d_device.QueryInterface(&dxgiDevice));
-
+    if (s_d3d_device && FAILED(s_d3d_device->GetDeviceRemovedReason()))
     {
+        s_d3d_device.Release();
+        s_device.Release();
+    }
+    if (!s_d3d_device || !s_device)
+    {
+        CComPtr<ID3D11Device> d3d_device;
+        CHECK_FAILURE_NORET(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                              nullptr, 0, D3D11_SDK_VERSION, &d3d_device, nullptr, nullptr));
+        CComPtr<IDXGIDevice> dxgiDevice;
+        CHECK_FAILURE_NORET(d3d_device.QueryInterface(&dxgiDevice));
         CComPtr<IInspectable> inspectable;
         CHECK_FAILURE_NORET(CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice, &inspectable));
+        CComPtr<IDirect3DDevice> device;
         CHECK_FAILURE_NORET(inspectable.QueryInterface(&device));
+        s_d3d_device = d3d_device;
+        s_device = device;
     }
+    auto &d3d_device = s_d3d_device;
+    auto &device = s_device;
 
     CComPtr<ID3D11DeviceContext> d3d_context;
     d3d_device->GetImmediateContext(&d3d_context);
@@ -200,23 +202,64 @@ void capture_window(HWND window_handle, void (*cb)(byte *, size_t), bool blackbo
     if (SUCCEEDED(session.QueryInterface(&session3)))
         session3->put_IsBorderRequired(false);
     EventRegistrationToken token;
-    std::atomic_flag waitforloadflag = ATOMIC_FLAG_INIT;
-    waitforloadflag.test_and_set();
-    CComPtr<FrameArrivedCallback> arrivedCallback = new FrameArrivedCallback{texture, waitforloadflag};
+    std::atomic_flag hasframe = ATOMIC_FLAG_INIT;
+    hasframe.test_and_set();
+    CComPtr<FrameArrivedCallback> arrivedCallback = new FrameArrivedCallback{hasframe};
     CHECK_FAILURE_NORET(m_frame_pool->add_FrameArrived(arrivedCallback, &token));
 
     CHECK_FAILURE_NORET(session->StartCapture());
-    MSG message;
-    while (waitforloadflag.test_and_set())
+
+    // The first frames of a new session can be DWM-cached content that is
+    // stale for DirectX/UE games, so prefer a frame that arrives after a short
+    // drain. WGC only delivers frames when the window presents, so a static
+    // window may never send a fresh one: keep the newest drained frame as the
+    // fallback (for such a window the cached content is current). Frames must
+    // be taken with TryGetNextFrame to free pool slots, or WGC stops delivering.
+    CComPtr<IDirect3D11CaptureFrame> latest;
+    auto takeframes = [&]()
     {
-        if (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE) > 0)
+        bool got = false;
+        while (true)
         {
-            DispatchMessage(&message);
+            CComPtr<IDirect3D11CaptureFrame> frame;
+            if (FAILED(m_frame_pool->TryGetNextFrame(&frame)) || !frame)
+                break;
+            latest = frame;
+            got = true;
         }
+        return got;
+    };
+    auto pump = [&](ULONGLONG ms, bool stopatframe)
+    {
+        MSG message;
+        ULONGLONG deadline = GetTickCount64() + ms;
+        while (GetTickCount64() < deadline)
+        {
+            if (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE) > 0)
+                DispatchMessage(&message);
+            if (!hasframe.test_and_set() && takeframes() && stopatframe)
+                return true;
+            Sleep(1);
+        }
+        return false;
+    };
+    pump(100, false);
+    // Bounded wait: a minimized/hidden window may deliver nothing at all, and
+    // the caller then falls back to other capture methods.
+    if (!pump(latest ? 200 : 1000, true))
+        takeframes();
+    m_frame_pool->remove_FrameArrived(token);
+    if (latest)
+    {
+        CComPtr<IDirect3DSurface> surface;
+        if (SUCCEEDED(latest->get_Surface(&surface)))
+            GetTextureFromSurface(surface, &texture);
     }
     CComPtr<IClosable> closer;
     if (SUCCEEDED(session.QueryInterface(&closer)) && closer)
         closer->Close();
+    if (!texture)
+        return;
     D3D11_TEXTURE2D_DESC captured_texture_desc;
     texture->GetDesc(&captured_texture_desc);
     captured_texture_desc.Usage = D3D11_USAGE_STAGING;

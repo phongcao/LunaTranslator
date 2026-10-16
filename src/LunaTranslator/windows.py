@@ -405,6 +405,23 @@ def GetWindowRect(hwnd):
         return None
 
 
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+
+
+def GetExtendedFrameBounds(hwnd):
+    """窗口的可见边界（不含 Win10+ 的透明缩放边框），即 WGC 截图覆盖的范围。"""
+    _rect = RECT()
+    try:
+        hr = windll.dwmapi.DwmGetWindowAttribute(
+            HWND(hwnd), DWMWA_EXTENDED_FRAME_BOUNDS, byref(_rect), sizeof(RECT)
+        )
+    except (AttributeError, OSError):
+        return None
+    if hr != 0:
+        return None
+    return (_rect.left, _rect.top, _rect.right, _rect.bottom)
+
+
 def GetCursorPos():
     _p = POINT()
     _GetCursorPos(pointer(_p))

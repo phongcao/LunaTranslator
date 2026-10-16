@@ -739,7 +739,9 @@ class OCRTranslationOverlay(QWidget):
             math.hypot(p3.x() - p0.x(), p3.y() - p0.y())
             + math.hypot(p2.x() - p1.x(), p2.y() - p1.y())
         ) / 2
-        if abs(ang) < 0.3 or w <= 1 or h <= 1:
+        # OCR 四点框有 1~2° 的抖动很常见（游戏对话框等水平文字也会），
+        # 按此旋转会把译文画歪；只有明显倾斜才旋转
+        if abs(ang) < 3 or w <= 1 or h <= 1:
             # 近水平：AABB 绘制（避免变换取整带来的漂移）
             xs = [p.x() for p in pts]
             ys = [p.y() for p in pts]

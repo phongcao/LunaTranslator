@@ -971,5 +971,6 @@
     "左上": "Trên cùng bên trái",
     "右上": "Trên cùng bên phải",
     "中上": "Trên cùng giữa",
-    "鼠标穿透范围框": "Chuột xuyên thấu khung chọn (Click-through)"
+    "鼠标穿透范围框": "Chuột xuyên thấu khung chọn (Click-through)",
+    "截图时排除OCR窗口": "Loại trừ cửa sổ OCR khỏi ảnh chụp"
 }

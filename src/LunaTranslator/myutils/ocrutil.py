@@ -5,7 +5,7 @@ from myutils.commonbase import ArgsEmptyExc
 from myutils.hwnd import safepixmap
 from myutils.utils import stringfyerror
 from traceback import print_exc
-import threading, gobject, NativeUtils
+import threading, gobject, NativeUtils, windows
 from ocrengines.baseocrclass import baseocr, OCRResultParsed
 
 
@@ -17,6 +17,29 @@ def imageCut(hwnd, rect: QRect, curr=-1) -> QImage:
     if hwnd:
         return succ, pix
     return pix
+
+
+def windowCaptureCut(hwnd, rect: QRect) -> QImage:
+    """WGC（Windows Graphics Capture）截取绑定窗口自身的画面并裁剪到选区
+    （屏幕物理坐标）。与 GDI 不同，DirectX/UE 等游戏也能拿到当前画面，
+    且不含遮挡在其上的其他窗口。失败返回空 QImage。"""
+    data = NativeUtils.WinRT.capture_window(hwnd)
+    if not data:
+        return QImage()
+    bounds = windows.GetExtendedFrameBounds(hwnd) or windows.GetWindowRect(hwnd)
+    if not bounds:
+        return QImage()
+    img = QImage.fromData(data)
+    if img.isNull():
+        return img
+    if img.format() == QImage.Format.Format_ARGB32:
+        # 交换链的 alpha 通道常无意义（可能全 0），窗口截图按不透明处理
+        img.reinterpretAsFormat(QImage.Format.Format_RGB32)
+    crop = rect.translated(-bounds[0], -bounds[1])
+    if not crop.intersects(img.rect()):
+        return QImage()
+    # 选区超出窗口的部分由 copy 以 0 填充，尺寸保持与选区一致
+    return img.copy(crop)
 
 
 _nowuseocrx = None

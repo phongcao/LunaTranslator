@@ -36,18 +36,27 @@ class SideGrip(QWidget):
             self.resizeFunc = self.resizeBottom
         self.mousePos = None
 
+    # rangeadjust 的 geometry()/setGeometry() 是物理像素（GetWindowRect/
+    # MoveWindow），鼠标 delta 与 width()/minimumWidth() 是 Qt 逻辑像素：
+    # 左/上边需换算成物理像素再算，否则高 DPI 下一拖就缩成 1/DPR 宽
     def resizeLeft(self, delta):
         window = self.window()
-        width = max(window.minimumWidth(), window.width() - delta.x())
+        dpr = window.devicePixelRatioF()
         geo = window.geometry()
-        geo.setLeft(geo.right() - width)
+        width = max(
+            round(window.minimumWidth() * dpr), geo.width() - round(delta.x() * dpr)
+        )
+        geo.setLeft(geo.right() + 1 - width)
         window.setGeometry(geo)
 
     def resizeTop(self, delta):
         window = self.window()
-        height = max(window.minimumHeight(), window.height() - delta.y())
+        dpr = window.devicePixelRatioF()
         geo = window.geometry()
-        geo.setTop(geo.bottom() - height)
+        height = max(
+            round(window.minimumHeight() * dpr), geo.height() - round(delta.y() * dpr)
+        )
+        geo.setTop(geo.bottom() + 1 - height)
         window.setGeometry(geo)
 
     def resizeRight(self, delta):
@@ -153,6 +162,44 @@ def set_global_mousetransp(b, update_switch=True):
             pass
     if update_switch:
         gobject.base.ocr_mousetransp_sync.emit(b)
+
+
+def apply_capture_exclusion():
+    """OCR 设置里切换 截图排除 后，重新应用到所有存活的范围框与覆盖层。"""
+    for r in list(_all_rangeadjusts):
+        try:
+            if getattr(r, "_native_hwnd", None):
+                r.capture_excluded = NativeUtils.ExcludeFromCapture(r._native_hwnd)
+            overlay = getattr(r, "translation_overlay", None)
+            if overlay is not None and overlay._native_hwnd:
+                overlay.capture_excluded = NativeUtils.ExcludeFromCapture(
+                    overlay._native_hwnd
+                )
+        except RuntimeError:
+            pass
+
+
+def raise_all_rangeadjusts():
+    """范围框及其原地译文覆盖层重新置顶（随主窗口 settop 调用）。
+
+    游戏（尤其 DirectX/全屏无边框）或 Magpie 的缩放窗口自身也是置顶
+    窗口，获得前台时会压到范围框/覆盖层之上；只靠 WindowStaysOnTopHint
+    不会恢复。可能从 WinEvent 钩子线程调用：只用缓存的原生句柄，不碰
+    Qt 控件；不带 SWP_SHOWWINDOW，隐藏的窗口保持隐藏。"""
+    try:
+        ranges = list(_all_rangeadjusts)
+    except RuntimeError:
+        return
+    flags = windows.SWP_NOACTIVATE | windows.SWP_NOSIZE | windows.SWP_NOMOVE
+    for r in ranges:
+        hwnd = getattr(r, "_native_hwnd", None)
+        if not hwnd:  # 尚未创建或已关闭
+            continue
+        overlay = getattr(r, "translation_overlay", None)
+        # 先范围框后覆盖层：覆盖层在上
+        for hwnd in (hwnd, getattr(overlay, "_native_hwnd", None)):
+            if hwnd:
+                windows.SetWindowPos(hwnd, windows.HWND_TOPMOST, 0, 0, 0, 0, flags)
 
 
 def _hover_fill_color():
@@ -346,6 +393,7 @@ class rangeadjust(Mainw):
     def starttrace(self, pos):
         self.tracepos = self.geometry().topLeft()
         self.traceposstart = pos
+        self._tracelast = None
 
     def traceoffset(self, curr: QPoint):
         hwnd = gobject.base.hwnd
@@ -365,10 +413,15 @@ class rangeadjust(Mainw):
             self.tracepos = QPoint()
             return
         _geo = self.geometry()
-        if self.tracepos.isNull():
+        # 框不在上次跟随设置的位置：被用户拖动/拉伸（边框手柄拖左/上边会
+        # 移动左上角）过——以当前位置为新基准，不能拉回旧位置
+        if self.tracepos.isNull() or (
+            self._tracelast is not None and _geo.topLeft() != self._tracelast
+        ):
             self.tracepos = _geo.topLeft()
             self.traceposstart = curr
         target = self.tracepos + (curr - self.traceposstart) * self.devicePixelRatioF()
+        self._tracelast = target
         self.setGeometry(QRect(target.x(), target.y(), _geo.width(), _geo.height()))
 
     def rect(self):
@@ -396,6 +449,7 @@ class rangeadjust(Mainw):
         self.setstyle()
         self.closesignal.connect(self.close)
         self.tracepos = QPoint()
+        self._tracelast = None  # 上次跟随窗口设置的左上角（物理像素）
         self.drag_label = QLabel(self)
         self.drag_label.setGeometry(0, 0, 4000, 2000)
         self._isTracking = False
@@ -412,6 +466,7 @@ class rangeadjust(Mainw):
         for s in self.cornerGrips:
             s.raise_()
         windows.WindowFocus.giveup(self.winId())
+        self._native_hwnd = int(self.winId())
         # 截图排除（Win10 2004+）：选框边框/悬停高亮不进 OCR 截图，
         # 与覆盖层共用 NativeUtils.ExcludeFromCapture。结果记下——旧系统
         # 排除失败时，OCR 截图改走 选区下唯一不透明窗口 的路径
@@ -559,6 +614,7 @@ class rangeadjust(Mainw):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._native_hwnd = int(self.winId())
         if self.translation_overlay is not None:
             self.translation_overlay.sync()
 
@@ -569,6 +625,8 @@ class rangeadjust(Mainw):
 
     def closeEvent(self, event):
         self.invalidate_overlay()
+        # 句柄可能随窗口销毁被系统复用，不再参与置顶
+        self._native_hwnd = None
         if self.translation_overlay is not None:
             self.translation_overlay.hide()
         super().closeEvent(event)
@@ -577,7 +635,8 @@ class rangeadjust(Mainw):
         if self._isTracking:
             self._endPos = e.pos() - self._startPos
             _geo = self.geometry()
-            _geo.translate(self._endPos)
+            # geometry() 是物理像素，鼠标位移是逻辑像素
+            _geo.translate(self._endPos * self.devicePixelRatioF())
             self.setGeometry(_geo)
 
     def mousePressEvent(self, e: QMouseEvent):

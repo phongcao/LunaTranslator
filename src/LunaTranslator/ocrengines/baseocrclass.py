@@ -208,9 +208,80 @@ class OCRResult:
                 vertical = vertical != 0
         self.vertical = bool(vertical)
 
-    def parse(self, space, scale):
+    @staticmethod
+    def _is_cjk_char(c: str):
+        o = ord(c)
+        return (
+            0x3040 <= o <= 0x30FF  # 假名
+            or 0x3400 <= o <= 0x9FFF  # 汉字
+            or 0xF900 <= o <= 0xFAFF
+            or 0xAC00 <= o <= 0xD7AF  # 谚文
+            or 0x20000 <= o <= 0x2FFFF
+        )
+
+    @staticmethod
+    def _is_junk_line(text: str, cjk=False):
+        """把对话框花边/分隔线等装饰识别成的乱码行（如
+        "883-53--X-353-5--送-----"、"X850X550"、孤立的 "E"）。
+
+        cjk：源语言为中日韩时，不含任何中日韩文字、却含字母或数字的块
+        即为乱码（台词总有汉字/假名/谚文）。否则（及中日韩下的兜底）：
+        几乎没有文字，且含数字或线条类 ASCII 符号。过短的行与纯标点
+        台词（"……"、"「……！？」"）保留。"""
+        s = "".join(text.split())
+        if not s:
+            return False
+        if cjk and not any(OCRResult._is_cjk_char(c) for c in s):
+            return any(c.isalnum() for c in s)
+        if len(s) < 4:
+            return False
+        letters = sum(1 for c in s if c.isalpha())
+        if letters >= len(s) * 0.25:
+            return False
+        return any(c.isdigit() or c in "-=_*#~|/\\+<>^" for c in s)
+
+    def __mostly_cjk(self):
+        """源语言没设成中日韩（如误设为英语/自动）时，按识别结果本身判断：
+        字母类字符过半是中日韩文字。"""
+        letters = cjk = 0
+        for block in self.blocks:
+            for c in block.text:
+                if c.isalpha():
+                    letters += 1
+                    cjk += self._is_cjk_char(c)
+        return letters > 0 and cjk * 2 > letters
+
+    def __dropjunk(self, cjk):
+        if self.hasboxs:
+            # 在合并临近行之前按块过滤，免得乱码行并进正文
+            self.blocks = [
+                _ for _ in self.blocks if not self._is_junk_line(_.text, cjk)
+            ]
+        else:
+            for block in self.blocks:
+                block.text = "\n".join(
+                    _
+                    for _ in block.text.split("\n")
+                    if not self._is_junk_line(_, cjk)
+                )
+            self.blocks = [_ for _ in self.blocks if _.text.strip()]
+
+    def parse(self, space, scale, srclang=None):
         if not self:
             return
+        if not self.isocrtranslate and globalconfig.get("ocr_drop_junk_lines", True):
+            self.__dropjunk(
+                srclang
+                in (
+                    Languages.Chinese,
+                    Languages.TradChinese,
+                    Languages.Japanese,
+                    Languages.Korean,
+                )
+                or self.__mostly_cjk()
+            )
+            if not self:
+                return
         if self.blocks and scale != 1:
             for block in self.blocks:
                 block.box = tuple(_ / scale for _ in block.box)
@@ -372,7 +443,7 @@ class OCRResultParsed:
         self.srclang_1 = srclang_1
         self.result = result
         if result:
-            result.parse(self.space, scale)
+            result.parse(self.space, scale, srclang_1)
 
     @property
     def textonly(self):
