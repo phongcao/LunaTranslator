@@ -1302,10 +1302,20 @@ def common_parse_normal_response_1(
                 raise Exception()
             return resp, None
         else:
-            message: dict = js["choices"][0]["message"]
-            return message["content"], message.get("reasoning")
+            choice: dict = js["choices"][0]
+            message: dict = choice["message"]
+            content = message["content"]
+            reasoning = message.get("reasoning") or message.get("reasoning_content")
     except:
         raise Exception(response)
+    if content is None:
+        # 推理模型把 max_tokens 全部用于思考时，content 为 null
+        raise Exception(
+            "The model returned no answer (finish_reason: {}). It probably used all max_tokens on reasoning; disable thinking or raise max_tokens.".format(
+                choice.get("finish_reason")
+            )
+        )
+    return content, reasoning
 
 
 def common_parse_normal_response(

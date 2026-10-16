@@ -189,6 +189,15 @@ You can also use API relay tools such as [new-api](https://github.com/QuantumNou
 
 For usage methods, you can refer to [this article](https://www.newapi.ai/en/docs/apps/luna-translator).
 
+## vLLM
+
+For a model served locally by vLLM, for example Qwen3.8-27B started from vLLM Manager. It works like the general large model interface, with defaults set for that server:
+
+- **API Endpoint Address** `http://127.0.0.1:8000/v1`. Use `127.0.0.1` rather than `localhost`, which adds about 2 seconds to every request.
+- **API Key** The key shown on vLLM Manager's Serve tab. If left empty, the `VLLM_API_KEY` environment variable is used.
+- **model** `qwen3.8-27b`, the served model name. Use the refresh button to list what the server is running.
+- **Other Parameters** `chat_template_kwargs` turns off Qwen3's thinking, so translations start right away. Set `enable_thinking` to `true` to turn it back on.
+
 ## Specific Offline Translation Models
 
 There are offline large language models specifically designed for offline translation or fine-tuned for particular scenarios.

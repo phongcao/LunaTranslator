@@ -45,4 +45,14 @@ v2 trong `API version` là phiên bản giao diện API của GPT-SoVITS, không
 
 Trong các tham số khác, chỉ có một số ít tham số thường dùng được thêm vào. Nếu bạn cần các tham số khác, bạn có thể tự thêm chúng.
 
+== vLLM
+
+Sử dụng các máy chủ giọng nói được khởi động từ thẻ Speech của vLLM Manager: VieNeu-TTS (`http://127.0.0.1:8100`) cho tiếng Việt và Qwen3-TTS (`http://127.0.0.1:8101`) cho tiếng Anh, tiếng Trung, tiếng Nhật, tiếng Hàn và các ngôn ngữ khác.
+
+Điền `API Key` bằng khóa hiển thị ở thẻ Serve của vLLM Manager, hoặc đặt biến môi trường `VLLM_API_KEY`. Hãy dùng `127.0.0.1` thay vì `localhost`, vì `localhost` làm mỗi yêu cầu chậm thêm khoảng 2 giây.
+
+Với giọng `Tự động`, văn bản có chữ cái tiếng Việt (như `ă đ ơ ư ạ ả`) sẽ được VieNeu-TTS đọc bằng `VieNeu-TTS Giọng đọc`, còn văn bản khác được Qwen3-TTS đọc bằng `Qwen3-TTS Giọng đọc`. Khi chọn một giọng cụ thể, luôn dùng máy chủ của giọng đó.
+
+Tốc độ đọc chỉ áp dụng cho Qwen3-TTS; VieNeu-TTS bỏ qua thiết lập này.
+
 :::

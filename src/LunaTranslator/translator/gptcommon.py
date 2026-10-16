@@ -59,7 +59,10 @@ def commonparseresponse_good(
                 continue
             delta: dict = json_data["choices"][0].get("delta", {})
             msg: str = delta.get("content", None)
-            reasoning_content: str = delta.get("reasoning_content", None)
+            # 新版 vLLM 使用 reasoning 字段
+            reasoning_content: str = delta.get("reasoning_content", None) or delta.get(
+                "reasoning", None
+            )
             if reasoning_content:
                 if hidethinking:
                     isreasoning_content = True

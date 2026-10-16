@@ -19,6 +19,7 @@ Thumbs.db
 *.wav 
 *.zip
 *.7z
+.env
 build/
 builds/
 
@@ -30,6 +31,8 @@ src/cache
 src/chrome_cache
 src/files/ocrmodel
 src/files/*.exe
+src/files/LunaSubprocess32.exe.bak
+src/files/LunaSubprocess64.exe.bak
 src/files/DLL32
 src/files/DLL64
 src/files/LunaHook

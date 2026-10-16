@@ -343,6 +343,10 @@ def syncconfig(config1, default, drop=False, deep=0):
                     _nuse.append(k)
             for k in _nuse:
                 config1[key].pop(k)
+            # 新增的参数按默认配置的顺序排列，设置界面按 args 顺序显示
+            _ordered = [(k, config1[key][k]) for k in default[key]]
+            config1[key].clear()
+            config1[key].update(_ordered)
 
         else:
             if type(default[key]) != type(config1[key]) and (

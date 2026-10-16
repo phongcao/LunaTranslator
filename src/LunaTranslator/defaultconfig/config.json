@@ -854,6 +854,136 @@
                 }
             }
         },
+        "vllmtts": {
+            "use": false,
+            "name": "vLLM (VieNeu-TTS / Qwen3-TTS)",
+            "type": "offline",
+            "useproxy": false,
+            "args": {
+                "SECRET_KEY": "",
+                "流式输出": true,
+                "s": "",
+                "vieneu_use": true,
+                "vieneu_url": "http://127.0.0.1:8100",
+                "vieneu_voice": "Mai Anh",
+                "s2": "",
+                "qwen_use": true,
+                "qwen_url": "http://127.0.0.1:8101",
+                "qwen_voice": "ryan",
+                "qwen_language": "Auto",
+                "qwen_instructions": ""
+            },
+            "argstype": {
+                "SECRET_KEY": {
+                    "name": "API Key",
+                    "type": "textlist",
+                    "issecret": true
+                },
+                "流式输出": {
+                    "type": "switch"
+                },
+                "s": {
+                    "type": "split"
+                },
+                "s2": {
+                    "type": "split"
+                },
+                "vieneu_use": {
+                    "name": "VieNeu-TTS_使用",
+                    "type": "switch"
+                },
+                "qwen_use": {
+                    "name": "Qwen3-TTS_使用",
+                    "type": "switch"
+                },
+                "vieneu_url": {
+                    "name": "VieNeu-TTS URL"
+                },
+                "vieneu_voice": {
+                    "name": "VieNeu-TTS_声音",
+                    "type": "lineedit_or_combo",
+                    "list": [
+                        "Hải Đăng",
+                        "Mai Anh",
+                        "Trúc Ly",
+                        "Ngọc Huyền",
+                        "Đoan Trang",
+                        "Ngọc Linh",
+                        "Quỳnh Anh",
+                        "Thùy Dung",
+                        "Thục Đoan",
+                        "Mỹ Duyên",
+                        "Kim Thanh",
+                        "Ngọc Trân",
+                        "Adam bựa",
+                        "Thiện Minh",
+                        "Thiền Tâm Đức",
+                        "Minh Đức",
+                        "Phạm Tuyên",
+                        "Xuân Vĩnh",
+                        "Thanh Bình",
+                        "Quốc Tuấn",
+                        "Quang Sơn",
+                        "Thái Sơn",
+                        "Minh Triết",
+                        "Đức Trí",
+                        "Adam"
+                    ]
+                },
+                "qwen_url": {
+                    "name": "Qwen3-TTS URL"
+                },
+                "qwen_voice": {
+                    "name": "Qwen3-TTS_声音",
+                    "type": "lineedit_or_combo",
+                    "list": [
+                        "ryan",
+                        "aiden",
+                        "vivian",
+                        "serena",
+                        "uncle_fu",
+                        "dylan",
+                        "eric",
+                        "ono_anna",
+                        "sohee"
+                    ]
+                },
+                "qwen_language": {
+                    "name": "Qwen3-TTS_语言",
+                    "type": "combo",
+                    "list": [
+                        "Auto",
+                        "English",
+                        "Chinese",
+                        "Japanese",
+                        "Korean",
+                        "German",
+                        "French",
+                        "Russian",
+                        "Portuguese",
+                        "Spanish",
+                        "Italian"
+                    ],
+                    "internal": [
+                        "Auto",
+                        "English",
+                        "Chinese",
+                        "Japanese",
+                        "Korean",
+                        "German",
+                        "French",
+                        "Russian",
+                        "Portuguese",
+                        "Spanish",
+                        "Italian"
+                    ]
+                },
+                "qwen_instructions": {
+                    "name": "Qwen3-TTS instructions",
+                    "placeholder": "Speak cheerfully and a little fast"
+                }
+            }
+        },
         "edgetts": {
             "use": false,
             "name": "edgeTTS"
@@ -1702,6 +1832,14 @@
             "type": "offline",
             "color": "blue",
             "name": "特定离线翻译模型",
+            "is_gpt_like": true,
+            "useproxy": false
+        },
+        "vllm": {
+            "use": false,
+            "type": "offline",
+            "color": "blue",
+            "name": "vLLM",
             "is_gpt_like": true,
             "useproxy": false
         },

@@ -191,6 +191,15 @@ Bạn cũng có thể sử dụng các công cụ chuyển tiếp API như [new-
 
 Để biết phương pháp sử dụng, bạn có thể tham khảo [bài viết này](https://www.newapi.ai/en/docs/apps/luna-translator).
 
+## vLLM
+
+Dùng cho mô hình chạy cục bộ bằng vLLM, ví dụ Qwen3.8-27B được khởi động từ vLLM Manager. Giao diện này hoạt động giống giao diện mô hình lớn chung, với các giá trị mặc định dành cho máy chủ đó:
+
+- **Địa chỉ API Endpoint** `http://127.0.0.1:8000/v1`. Hãy dùng `127.0.0.1` thay vì `localhost`, vì `localhost` làm mỗi yêu cầu chậm thêm khoảng 2 giây.
+- **API Key** Khóa hiển thị ở thẻ Serve của vLLM Manager. Nếu để trống, biến môi trường `VLLM_API_KEY` sẽ được dùng.
+- **model** `qwen3.8-27b`, tên mô hình mà máy chủ phục vụ. Nhấn nút làm mới để liệt kê mô hình máy chủ đang chạy.
+- **Các tham số khác** `chat_template_kwargs` tắt chế độ suy nghĩ (thinking) của Qwen3 để bản dịch bắt đầu ngay. Đặt `enable_thinking` thành `true` để bật lại.
+
 
 ## Các mô hình dịch thuật ngoại tuyến cụ thể
 

@@ -45,4 +45,14 @@ v2 in `API version` is the version of GPT-SoVITS's API interface, not the model 
 
 Only a few commonly used parameters have been added to other parameters. If you need other parameters, you can add them yourself.
 
+== vLLM
+
+Uses the speech servers started from the Speech tab of vLLM Manager: VieNeu-TTS (`http://127.0.0.1:8100`) for Vietnamese and Qwen3-TTS (`http://127.0.0.1:8101`) for English, Chinese, Japanese, Korean and other languages.
+
+Fill in `API Key` with the key shown on vLLM Manager's Serve tab, or set the `VLLM_API_KEY` environment variable. Use `127.0.0.1` rather than `localhost`, which adds about 2 seconds to every request.
+
+With the `Auto` voice, text containing Vietnamese letters (such as `ă đ ơ ư ạ ả`) is read by VieNeu-TTS with `VieNeu-TTS Voice`, and other text by Qwen3-TTS with `Qwen3-TTS Voice`. Choosing a specific voice always uses that server.
+
+The speech rate only applies to Qwen3-TTS; VieNeu-TTS ignores it.
+
 :::
