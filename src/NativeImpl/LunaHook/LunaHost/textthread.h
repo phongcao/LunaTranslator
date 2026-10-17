@@ -47,6 +47,7 @@ private:
 
 	void Flush();
 	std::wstring bufferDecoded;
+	std::wstring lastPushed;
 	std::string UseForDetectRaw;
 	BYTE leadByte = 0;
 	std::mutex bufferMutex;

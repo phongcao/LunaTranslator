@@ -74,19 +74,44 @@ def _2_f(line, args):
     return line
 
 
+def _smallest_period(line: str) -> int:
+    # KMP failure function: line[i] == line[i + p] for every i, with p minimal
+    fail = [0] * len(line)
+    k = 0
+    for i in range(1, len(line)):
+        while k and line[i] != line[k]:
+            k = fail[k - 1]
+        if line[i] == line[k]:
+            k += 1
+        fail[i] = k
+    return len(line) - fail[-1]
+
+
+_3_last_period = ""
+
+
 def _3_f(line, args):
+    global _3_last_period
     times = args["重复次数(若为1则自动分析去重)"]
 
     if times >= 2:
-        guesstimes = times
-    else:
-        guesstimes = len(line)
-        while guesstimes >= 1:
-            if line[: len(line) // guesstimes] * guesstimes == line:
-                break
-            guesstimes -= 1
-    line = line[: len(line) // guesstimes]
-    return line
+        return line[: len(line) // times]
+    if not line:
+        return line
+    period = _smallest_period(line)
+    if len(line) % period == 0:
+        if period < len(line):
+            _3_last_period = line[:period]
+        return line[:period]
+    # 钩子缓冲区被 maxBufferSize 截断时，首尾可能是半句：ABCDABCDAB / CDABCDABCD
+    if len(line) < period * 3:
+        return line
+    unit = line[:period]
+    # 截断后的下一段从句中开始，是上一句的轮转，还原成上一句，以便被当作重复文本跳过
+    if len(unit) == len(_3_last_period) and unit in _3_last_period * 2:
+        return _3_last_period
+    _3_last_period = unit
+    return unit
 
 
 def _3_2(line):

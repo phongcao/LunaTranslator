@@ -140,6 +140,13 @@ void TextThread::Push(BYTE *data, int length)
 
 		if (auto converted = commonparsestring(data, length, &hp, hostcodepage))
 		{
+			// Some API hooks (e.g. WideCharToMultiByte) see the same whole string every frame while
+			// it stays on screen. Appending each copy (and refreshing the flush timer) piles hundreds
+			// of copies into one sentence until maxBufferSize; drop the duplicate instead so the
+			// buffer flushes once with a single copy.
+			if (converted.value().size() > 2 && !bufferDecoded.empty() && converted.value() == lastPushed)
+				return;
+			lastPushed = converted.value();
 			bufferDecoded.append(converted.value());
 			if (hp.type & FULL_STRING && (flushDelay == 0 || (converted.value().size() > 1)))
 				bufferDecoded.push_back(L'\n');
